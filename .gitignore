@@ -1,0 +1,20 @@
+node_modules/
+.env
+cookies/
+results/
+debug-*.png
+
+# OS
+.DS_Store
+Thumbs.db
+__MACOSX/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Gemini
+gemini.md
+
