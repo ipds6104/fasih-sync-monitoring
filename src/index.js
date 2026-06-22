@@ -655,19 +655,47 @@ async function cmdCrawl() {
 
   console.log("── Step 2: Crawling per kab/kota ────────────────────");
   const allData = [];
-  for (const kab of kabKotaList) {
-    console.log(`  [${kab.code}] ${kab.name}`);
-    try {
-      const items = await crawlKabKota({ kab, sessionRef, pageSize: PAGE_SIZE });
-      console.log(`    → ${items.length} data`);
-      allData.push(...items);
-    } catch (err) {
-      console.error(`    ✗ Gagal: ${err.message}`);
+  const succeededKabCodes = new Set();
+  
+  let kabKotaToCrawl = [...kabKotaList];
+  let crawlAttempt = 1;
+  const maxCrawlAttempts = 3;
+
+  while (kabKotaToCrawl.length > 0 && crawlAttempt <= maxCrawlAttempts) {
+    if (crawlAttempt > 1) {
+      console.log(`\n── [Attempt ${crawlAttempt}/${maxCrawlAttempts}] Menarik ulang kab/kota yang gagal ──`);
     }
+    const failedThisRound = [];
+    for (const kab of kabKotaToCrawl) {
+      console.log(`  [${kab.code}] ${kab.name}`);
+      try {
+        const items = await crawlKabKota({ kab, sessionRef, pageSize: PAGE_SIZE });
+        console.log(`    → ${items.length} data`);
+        allData.push(...items);
+        succeededKabCodes.add(kab.code);
+      } catch (err) {
+        console.error(`    ✗ Gagal: ${err.message}`);
+        failedThisRound.push(kab);
+      }
+    }
+    kabKotaToCrawl = failedThisRound;
+    crawlAttempt++;
+  }
+
+  const totalExpected = kabKotaList.length;
+  const totalSucceeded = succeededKabCodes.size;
+  console.log(`\n── Validasi Akhir Wilayah ───────────────────────────`);
+  console.log(`  Target kab/kota: ${totalExpected}`);
+  console.log(`  Selesai ditarik: ${totalSucceeded}`);
+  
+  if (totalSucceeded < totalExpected) {
+    console.warn(`  ⚠ PERINGATAN: ${totalExpected - totalSucceeded} kab/kota gagal ditarik secara permanen!`);
+  } else {
+    console.log(`  ✓ Semua wilayah berhasil ditarik.`);
   }
 
   console.log(`\n── Selesai ───────────────────────────────────────────`);
-  console.log(`  Total data: ${allData.length} dari ${kabKotaList.length} kab/kota`);
+  console.log(`  Total data: ${allData.length} dari ${totalSucceeded}/${totalExpected} kab/kota`);
 
   if (allData.length > 0) {
     ensureDir(OUTPUT_XLSX);
