@@ -55,18 +55,27 @@ CONCURRENCY=3
 DELAY_MS=1000
 MAX_RETRIES=3
 
-# ── KONFIGURASI REGIONAL (Mempawah) ──
-KABUPATEN_CODES=04                                         # 04 adalah kode Kabupaten Mempawah
+# ── KONFIGURASI REGIONAL ──
+KABUPATEN_CODES=                                           # Kosongkan untuk semua kab/kota di Kalbar
 
 # ── LEVEL AGREGASI PROGRES ──
-REGION_SUMMARY_LEVEL=5                                     # 5 = Per SLS (14-digit), 6 = Per Sub-SLS (16-digit)
+REGION_SUMMARY_LEVEL=6                                     # 5 = Per SLS (14-digit), 6 = Per Sub-SLS (16-digit)
+
+# ── SINKRONISASI GOOGLE SHEETS ──
+SYNC_TO_GOOGLE_SHEETS=true
+GOOGLE_APPLICATION_CREDENTIALS=cerdas-486720-7bebb7cc9924.json
+SPREADSHEET_ID=1Jg5DwJUWu0Q-LmHXFabRBDbcxsymX0gmPPcrh_dZQyE # ID Google Sheet Anda
+SPREADSHEET_RANGE=6100!A1                                  # Nama tab dan range awal
+
+# ── SCHEDULER PENJADWAL ──
+CRON_SCHEDULE="0 8 * * *"                                  # Format cron (contoh: berjalan jam 8 pagi setiap hari)
 ```
 
 ---
 
 ## ── Panduan Menjalankan ───────────────────────────────────────────────────
 
-Proses penarikan data terbagi menjadi dua langkah:
+Proses penarikan data terbagi menjadi tiga langkah:
 
 ### 1. Inisialisasi Sesi Login (`npm run login`)
 Menjalankan browser Chromium di latar belakang, melakukan pengisian kredensial SSO BPS, menyelesaikan verifikasi, dan menyimpan cookie sesi ke folder `cookies/`:
@@ -75,29 +84,53 @@ npm run login
 ```
 *Catatan: Pastikan log menunjukkan `✓ Login berhasil`.*
 
-### 2. Penarikan Data (`npm run crawl`)
-Membaca sesi dari cookies yang tersimpan, mengunduh data progress per halaman, menangani retries jika terjadi 504 Gateway Timeout, dan mengekspor hasilnya:
+### 2. Penarikan & Sinkronisasi Manual (`npm run crawl`)
+Membaca sesi dari cookies yang tersimpan, mengunduh data progress per halaman, menangani retries jika terjadi 504 Gateway Timeout, mengekspor hasilnya, dan melakukan sinkronisasi otomatis ke Google Sheets:
 ```bash
 npm run crawl
 ```
+
+### 3. Otomatisasi dengan Scheduler (Latar Belakang 24/7)
+Aplikasi ini mendukung penjadwalan otomatis yang bekerja secara cross-platform menggunakan **PM2** (Process Manager).
+
+* **Menyalakan Scheduler Pertama Kali:**
+  ```bash
+  # Install PM2 secara lokal
+  npm install pm2
+  
+  # Jalankan scheduler di background
+  npx pm2 start src/scheduler.js --name "fasih-sync-scheduler"
+  ```
+* **Melihat Status Scheduler:**
+  ```bash
+  npx pm2 status
+  ```
+* **Melihat Log Aktivitas Real-time:**
+  ```bash
+  npx pm2 logs fasih-sync-scheduler
+  ```
+* **Menghentikan Scheduler:**
+  ```bash
+  npx pm2 stop fasih-sync-scheduler
+  ```
 
 ---
 
 ## ── Struktur Output File ──────────────────────────────────────────────────
 
-Setelah proses `npm run crawl` selesai, berkas output akan disimpan di folder `results/`:
+Setelah proses selesai, berkas output akan disimpan dan diperbarui di folder `results/` serta disinkronkan ke cloud:
 
 1. **`results/progress-pencacah.json`**  
    Raw data JSON lengkap hasil penarikan dari API.
    
 2. **`results/progress-pencacah.xlsx`**  
-   Laporan Excel yang tersusun atas 3 sheet:
+   Laporan Excel offline rapi yang tersusun atas 3 sheet:
    * **Sheet 1: `Progress per SLS`** *(Default View)*  
-     Menampilkan daftar progress per kode SLS 14-digit lengkap dengan nama kecamatan/desa (dari kode), username petugas, email petugas, target wilayah, serta breakdown status kuesioner.
    * **Sheet 2: `Ringkasan per Petugas`**  
-     Summary performa total per petugas.
    * **Sheet 3: `Detail Progres (Long)`**  
-     Format memanjang (long format) per status untuk keperluan analisis data lanjut.
+
+3. **Google Sheets (Online)**  
+   Data pada range `SPREADSHEET_RANGE` akan otomatis dibersihkan dan diperbarui dengan data progres ter-update di cloud yang bisa diakses bersama oleh tim monitoring.
 
 ---
 

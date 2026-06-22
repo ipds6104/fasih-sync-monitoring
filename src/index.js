@@ -2,14 +2,47 @@ import { chromium } from "playwright";
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
 import ExcelJS from "exceljs";
+import { syncToGoogleSheets } from "./sync-sheets.js";
 
 config();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COOKIES_PATH = resolve(__dirname, "..", "cookies", "fasih-sm.json");
 const STORAGE_PATH = COOKIES_PATH.replace(".json", "-storage.json");
+const LOG_FILE = resolve(__dirname, "..", "results", "crawl.log");
+
+// Helper to write to file
+const writeToFileLog = (msg) => {
+  try {
+    ensureDir(LOG_FILE);
+    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`, "utf-8");
+  } catch {}
+};
+
+// Backup original console methods
+const originalLog = console.log;
+const originalError = console.error;
+const originalWarn = console.warn;
+
+console.log = (...args) => {
+  const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+  originalLog(...args);
+  writeToFileLog(`INFO: ${msg}`);
+};
+
+console.error = (...args) => {
+  const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+  originalError(...args);
+  writeToFileLog(`ERROR: ${msg}`);
+};
+
+console.warn = (...args) => {
+  const msg = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : arg).join(' ');
+  originalWarn(...args);
+  writeToFileLog(`WARN: ${msg}`);
+};
 
 // ── configuration ──────────────────────────────────────────────────────────
 const BASE = "https://fasih-sm.bps.go.id";
@@ -48,7 +81,7 @@ const SUCCESS_SELECTORS = [
 ].filter(Boolean);
 
 // status codes yang trigger re-login
-const RELOGIN_STATUS = new Set([401, 403]);
+const RELOGIN_STATUS = new Set([401, 403, 405]);
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -223,11 +256,18 @@ async function fetchPage({ cookieStr, xsrfToken, page, pageSize, region2Id, sess
       body: JSON.stringify(body),
     });
 
-  let res = await doFetch(cookieStr, xsrfToken);
+  const start = Date.now();
+  let res;
+  try {
+    res = await doFetch(cookieStr, xsrfToken);
+  } catch (err) {
+    console.error(`    [Halaman ${page}] ✗ Error koneksi: ${err.message} (${Date.now() - start}ms)`);
+    throw err;
+  }
 
   // auto re-login kalau session expired
   if (RELOGIN_STATUS.has(res.status) && sessionRef) {
-    console.warn(`  ⚠ HTTP ${res.status} (session expired), re-login ...`);
+    console.warn(`    [Halaman ${page}] ⚠ HTTP ${res.status} (session expired), re-login ...`);
     const newCs = await refreshSession();
     // reload token dari cookies baru
     const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
@@ -237,7 +277,7 @@ async function fetchPage({ cookieStr, xsrfToken, page, pageSize, region2Id, sess
     res = await doFetch(newCs, newXt);
     // kalau masih 401, session Keycloak benar-benar mati → login UI ulang
     if (RELOGIN_STATUS.has(res.status)) {
-      console.warn(`  ⚠ Refresh gagal (masih ${res.status}), login ulang ...`);
+      console.warn(`    [Halaman ${page}] ⚠ Refresh gagal (masih ${res.status}), login ulang ...`);
       const fresh = await login();
       sessionRef.cookieStr = fresh.cookieStr;
       sessionRef.xsrfToken = fresh.xsrfToken;
@@ -245,11 +285,17 @@ async function fetchPage({ cookieStr, xsrfToken, page, pageSize, region2Id, sess
     }
   }
 
+  const elapsed = Date.now() - start;
   if (!res.ok) {
+    console.error(`    [Halaman ${page}] ✗ HTTP ${res.status} (${elapsed}ms)`);
     throw new Error(`HTTP ${res.status}`);
   }
   const json = await res.json();
-  if (!json.success) throw new Error(`API error: ${json.message}`);
+  if (!json.success) {
+    console.error(`    [Halaman ${page}] ✗ API error: ${json.message} (${elapsed}ms)`);
+    throw new Error(`API error: ${json.message}`);
+  }
+  console.log(`    [Halaman ${page}] ✓ HTTP 200 (${elapsed}ms)`);
   return json.data;
 }
 
@@ -262,28 +308,38 @@ async function fetchKabKotaList({ cookieStr, xsrfToken, sessionRef }) {
       headers: { accept: "application/json", "x-xsrf-token": xt, cookie: cs },
     });
 
-  let res = await doFetch(cookieStr, xsrfToken);
-  if (RELOGIN_STATUS.has(res.status) && sessionRef) {
-    console.warn(`  ⚠ HTTP ${res.status} saat fetch list kab/kota, re-login ...`);
-    const newCs = await refreshSession();
-    const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
-    const newXt = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
-    sessionRef.cookieStr = newCs;
-    sessionRef.xsrfToken = newXt;
-    res = await doFetch(newCs, newXt);
-    // kalau masih 401, session Keycloak benar-benar mati → login UI ulang
-    if (RELOGIN_STATUS.has(res.status)) {
-      console.warn(`  ⚠ Refresh gagal (masih ${res.status}), login ulang ...`);
-      const fresh = await login();
-      sessionRef.cookieStr = fresh.cookieStr;
-      sessionRef.xsrfToken = fresh.xsrfToken;
-      res = await doFetch(fresh.cookieStr, fresh.xsrfToken);
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      let res = await doFetch(sessionRef.cookieStr || cookieStr, sessionRef.xsrfToken || xsrfToken);
+      if (RELOGIN_STATUS.has(res.status) && sessionRef) {
+        console.warn(`  ⚠ HTTP ${res.status} saat fetch list kab/kota, re-login ...`);
+        const newCs = await refreshSession();
+        const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
+        const newXt = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
+        sessionRef.cookieStr = newCs;
+        sessionRef.xsrfToken = newXt;
+        res = await doFetch(newCs, newXt);
+        // kalau masih 401, session Keycloak benar-benar mati → login UI ulang
+        if (RELOGIN_STATUS.has(res.status)) {
+          console.warn(`  ⚠ Refresh gagal (masih ${res.status}), login ulang ...`);
+          const fresh = await login();
+          sessionRef.cookieStr = fresh.cookieStr;
+          sessionRef.xsrfToken = fresh.xsrfToken;
+          res = await doFetch(fresh.cookieStr, fresh.xsrfToken);
+        }
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (!json.success) throw new Error(`Region API error: ${json.message}`);
+      return json.data || [];
+    } catch (err) {
+      retries--;
+      console.warn(`  ⚠ Gagal fetch list kab/kota: ${err.message}. Sisa retry: ${retries}`);
+      if (retries === 0) throw new Error(`${err.message} (region list)`);
+      await sleep(2000);
     }
   }
-  if (!res.ok) throw new Error(`HTTP ${res.status} (region list)`);
-  const json = await res.json();
-  if (!json.success) throw new Error(`Region API error: ${json.message}`);
-  return json.data || [];
 }
 
 // ── batch processor ────────────────────────────────────────────────────────
@@ -321,11 +377,23 @@ async function processBatch({ pages, sessionRef, pageSize, region2Id, label }) {
 // ── crawl 1 kab/kota ────────────────────────────────────────────────────────
 async function crawlKabKota({ kab, sessionRef, pageSize }) {
   const { id: region2Id, code, name } = kab;
-  const first = await fetchPage({
-    cookieStr: sessionRef.cookieStr,
-    xsrfToken: sessionRef.xsrfToken,
-    page: 0, pageSize, region2Id, sessionRef,
-  });
+  let first = null;
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      first = await fetchPage({
+        cookieStr: sessionRef.cookieStr,
+        xsrfToken: sessionRef.xsrfToken,
+        page: 0, pageSize, region2Id, sessionRef,
+      });
+      break;
+    } catch (err) {
+      retries--;
+      console.warn(`    ⚠ Gagal load halaman pertama: ${err.message}. Sisa retry: ${retries}`);
+      if (retries === 0) throw err;
+      await sleep(2000);
+    }
+  }
   const totalElements = first.totalElements;
   if (!totalElements) {
     console.log(`    (kosong)`);
@@ -607,6 +675,15 @@ async function cmdCrawl() {
     const excelPath = await exportToExcel(allData, OUTPUT_XLSX);
     console.log(`  JSON: ${OUTPUT}`);
     console.log(`  Excel: ${excelPath}`);
+
+    if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
+      console.log("\n── Step 3: Syncing to Google Sheets ─────────────────");
+      try {
+        await syncToGoogleSheets(allData);
+      } catch (err) {
+        console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
+      }
+    }
   } else {
     console.log("\n  Tidak ada data yang berhasil diambil.");
   }
