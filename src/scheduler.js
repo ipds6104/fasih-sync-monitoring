@@ -23,6 +23,30 @@ const logMsg = (msg) => {
 
 logMsg(`[Scheduler] Starting... Schedule: "${CRON_SCHEDULE}"`);
 
+// ── Keep-Alive Loop ────────────────────────────────────────────────────────
+// Pings the BPS intranet server every 3 minutes to keep the VPN connection active
+const KEEP_ALIVE_URL = "https://fasih-sm.bps.go.id";
+const KEEP_ALIVE_INTERVAL = 3 * 60 * 1000; // 3 minutes
+
+logMsg(`[Keep-Alive] Initializing keep-alive ping to ${KEEP_ALIVE_URL} every 3 minutes`);
+
+setInterval(async () => {
+  try {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
+    
+    const res = await fetch(KEEP_ALIVE_URL, {
+      method: "HEAD",
+      signal: controller.signal,
+    });
+    
+    clearTimeout(id);
+    logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} succeeded with status ${res.status}`);
+  } catch (err) {
+    logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} failed: ${err.message}`);
+  }
+}, KEEP_ALIVE_INTERVAL);
+
 cron.schedule(CRON_SCHEDULE, () => {
   logMsg(`[Scheduler] Triggered crawl job...`);
   
@@ -39,3 +63,4 @@ cron.schedule(CRON_SCHEDULE, () => {
     logMsg(`[Scheduler] Error spawning crawl job: ${err.message}`);
   });
 });
+

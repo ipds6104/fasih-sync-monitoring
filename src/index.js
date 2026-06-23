@@ -700,9 +700,13 @@ async function cmdCrawl() {
   if (allData.length > 0) {
     ensureDir(OUTPUT_XLSX);
     writeFileSync(OUTPUT, JSON.stringify(allData, null, 2));
-    const excelPath = await exportToExcel(allData, OUTPUT_XLSX);
     console.log(`  JSON: ${OUTPUT}`);
-    console.log(`  Excel: ${excelPath}`);
+    try {
+      const excelPath = await exportToExcel(allData, OUTPUT_XLSX);
+      console.log(`  Excel: ${excelPath}`);
+    } catch (err) {
+      console.error(`  ✗ Gagal ekspor Excel (mungkin file sedang dibuka/dikunci): ${err.message}`);
+    }
 
     if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
       console.log("\n── Step 3: Syncing to Google Sheets ─────────────────");
