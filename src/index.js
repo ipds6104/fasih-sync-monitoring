@@ -265,23 +265,46 @@ async function fetchPage({ cookieStr, xsrfToken, page, pageSize, region2Id, sess
     throw err;
   }
 
-  // auto re-login kalau session expired
-  if (RELOGIN_STATUS.has(res.status) && sessionRef) {
-    console.warn(`    [Halaman ${page}] ⚠ HTTP ${res.status} (session expired), re-login ...`);
-    const newCs = await refreshSession();
-    // reload token dari cookies baru
-    const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
-    const newXt = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
-    sessionRef.cookieStr = newCs;
-    sessionRef.xsrfToken = newXt;
-    res = await doFetch(newCs, newXt);
-    // kalau masih 401, session Keycloak benar-benar mati → login UI ulang
-    if (RELOGIN_STATUS.has(res.status)) {
-      console.warn(`    [Halaman ${page}] ⚠ Refresh gagal (masih ${res.status}), login ulang ...`);
-      const fresh = await login();
-      sessionRef.cookieStr = fresh.cookieStr;
-      sessionRef.xsrfToken = fresh.xsrfToken;
-      res = await doFetch(fresh.cookieStr, fresh.xsrfToken);
+  // auto re-login kalau session expired (baik response status maupun redirect HTML pada status 200)
+  const contentType = res.headers.get("content-type") || "";
+  const isHtml = res.status === 200 && contentType.includes("text/html");
+  if ((RELOGIN_STATUS.has(res.status) || isHtml) && sessionRef) {
+    if (!sessionRef.refreshPromise) {
+      sessionRef.refreshPromise = (async () => {
+        console.warn(`    [Halaman ${page}] ⚠ HTTP ${res.status} (atau HTML login redirect), re-login ...`);
+        const newCs = await refreshSession();
+        // reload token dari cookies baru
+        const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
+        const newXt = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
+        sessionRef.cookieStr = newCs;
+        sessionRef.xsrfToken = newXt;
+        return { cookieStr: newCs, xsrfToken: newXt };
+      })().finally(() => {
+        sessionRef.refreshPromise = null;
+      });
+    }
+
+    const freshCreds = await sessionRef.refreshPromise;
+    res = await doFetch(freshCreds.cookieStr, freshCreds.xsrfToken);
+    
+    const nextContentType = res.headers.get("content-type") || "";
+    const nextIsHtml = res.status === 200 && nextContentType.includes("text/html");
+    // kalau masih expired, session Keycloak benar-benar mati → login UI ulang
+    if (RELOGIN_STATUS.has(res.status) || nextIsHtml) {
+      if (!sessionRef.loginPromise) {
+        sessionRef.loginPromise = (async () => {
+          console.warn(`    [Halaman ${page}] ⚠ Refresh gagal (masih ${res.status}/HTML), login ulang ...`);
+          const fresh = await login();
+          sessionRef.cookieStr = fresh.cookieStr;
+          sessionRef.xsrfToken = fresh.xsrfToken;
+          return fresh;
+        })().finally(() => {
+          sessionRef.loginPromise = null;
+        });
+      }
+      
+      const freshLogin = await sessionRef.loginPromise;
+      res = await doFetch(freshLogin.cookieStr, freshLogin.xsrfToken);
     }
   }
 
@@ -290,7 +313,13 @@ async function fetchPage({ cookieStr, xsrfToken, page, pageSize, region2Id, sess
     console.error(`    [Halaman ${page}] ✗ HTTP ${res.status} (${elapsed}ms)`);
     throw new Error(`HTTP ${res.status}`);
   }
-  const json = await res.json();
+
+  const text = await res.text();
+  if (text.trim().startsWith("<!DOCTYPE")) {
+    throw new Error("Mendapat HTML login page (tidak terautentikasi)");
+  }
+
+  const json = JSON.parse(text);
   if (!json.success) {
     console.error(`    [Halaman ${page}] ✗ API error: ${json.message} (${elapsed}ms)`);
     throw new Error(`API error: ${json.message}`);
@@ -312,25 +341,56 @@ async function fetchKabKotaList({ cookieStr, xsrfToken, sessionRef }) {
   while (retries > 0) {
     try {
       let res = await doFetch(sessionRef.cookieStr || cookieStr, sessionRef.xsrfToken || xsrfToken);
-      if (RELOGIN_STATUS.has(res.status) && sessionRef) {
-        console.warn(`  ⚠ HTTP ${res.status} saat fetch list kab/kota, re-login ...`);
-        const newCs = await refreshSession();
-        const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
-        const newXt = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
-        sessionRef.cookieStr = newCs;
-        sessionRef.xsrfToken = newXt;
-        res = await doFetch(newCs, newXt);
+      
+      const contentType = res.headers.get("content-type") || "";
+      const isHtml = res.status === 200 && contentType.includes("text/html");
+      
+      if ((RELOGIN_STATUS.has(res.status) || isHtml) && sessionRef) {
+        if (!sessionRef.refreshPromise) {
+          sessionRef.refreshPromise = (async () => {
+            console.warn(`  ⚠ HTTP ${res.status} (atau HTML redirect) saat fetch list kab/kota, re-login ...`);
+            const newCs = await refreshSession();
+            const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
+            const newXt = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
+            sessionRef.cookieStr = newCs;
+            sessionRef.xsrfToken = newXt;
+            return { cookieStr: newCs, xsrfToken: newXt };
+          })().finally(() => {
+            sessionRef.refreshPromise = null;
+          });
+        }
+        
+        const freshCreds = await sessionRef.refreshPromise;
+        res = await doFetch(freshCreds.cookieStr, freshCreds.xsrfToken);
+        
+        const nextContentType = res.headers.get("content-type") || "";
+        const nextIsHtml = res.status === 200 && nextContentType.includes("text/html");
         // kalau masih 401, session Keycloak benar-benar mati → login UI ulang
-        if (RELOGIN_STATUS.has(res.status)) {
-          console.warn(`  ⚠ Refresh gagal (masih ${res.status}), login ulang ...`);
-          const fresh = await login();
-          sessionRef.cookieStr = fresh.cookieStr;
-          sessionRef.xsrfToken = fresh.xsrfToken;
-          res = await doFetch(fresh.cookieStr, fresh.xsrfToken);
+        if (RELOGIN_STATUS.has(res.status) || nextIsHtml) {
+          if (!sessionRef.loginPromise) {
+            sessionRef.loginPromise = (async () => {
+              console.warn(`  ⚠ Refresh gagal (masih ${res.status}/HTML), login ulang ...`);
+              const fresh = await login();
+              sessionRef.cookieStr = fresh.cookieStr;
+              sessionRef.xsrfToken = fresh.xsrfToken;
+              return fresh;
+            })().finally(() => {
+              sessionRef.loginPromise = null;
+            });
+          }
+          
+          const freshLogin = await sessionRef.loginPromise;
+          res = await doFetch(freshLogin.cookieStr, freshLogin.xsrfToken);
         }
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      
+      const text = await res.text();
+      if (text.trim().startsWith("<!DOCTYPE")) {
+        throw new Error("Mendapat HTML login page (tidak terautentikasi)");
+      }
+      
+      const json = JSON.parse(text);
       if (!json.success) throw new Error(`Region API error: ${json.message}`);
       return json.data || [];
     } catch (err) {
