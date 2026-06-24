@@ -10,6 +10,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_PATH = resolve(__dirname, "..", process.env.GOOGLE_APPLICATION_CREDENTIALS || "cerdas-486720-7bebb7cc9924.json");
 const OUTPUT_JSON = resolve(__dirname, "..", "results", "progress-pencacah.json");
 
+// Status dokumen standar untuk kolom laporan tetap
+const FIXED_STATUSES = [
+  "DRAFT",
+  "OPEN",
+  "SUBMITTED RESPONDENT",
+  "SUBMITTED BY Pencacah",
+  "APPROVED BY Pengawas",
+  "REJECTED BY Pengawas",
+  "REVOKED BY Pengawas",
+];
+
 /**
  * Sync data array to Google Sheets
  * @param {Array} data Raw progres progress-pencacah
@@ -37,16 +48,19 @@ export async function syncToGoogleSheets(data) {
   const authClient = await auth.getClient();
   const sheets = google.sheets({ version: "v4", auth: authClient });
 
-  // 1. Ekstrak semua status unik untuk kolom
-  const allStatuses = new Set();
+  // 1. Ekstrak semua status untuk kolom (menggunakan FIXED_STATUSES sebagai kolom utama agar urutan kolom tidak bergeser)
+  const presentStatuses = new Set();
   for (const d of data) {
     for (const r of d.regionSummary || []) {
       for (const s of r.statusBreakdown || []) {
-        if (s.status) allStatuses.add(s.status);
+        if (s.status) presentStatuses.add(s.status);
       }
     }
   }
-  const statusList = [...allStatuses].sort();
+  const statusList = [
+    ...FIXED_STATUSES,
+    ...[...presentStatuses].filter((s) => !FIXED_STATUSES.includes(s)).sort(),
+  ];
 
   // 2. Buat header
   const headers = [

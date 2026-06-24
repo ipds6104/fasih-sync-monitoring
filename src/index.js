@@ -83,6 +83,17 @@ const SUCCESS_SELECTORS = [
 // status codes yang trigger re-login
 const RELOGIN_STATUS = new Set([401, 403, 405]);
 
+// Status dokumen standar untuk kolom laporan tetap
+const FIXED_STATUSES = [
+  "DRAFT",
+  "OPEN",
+  "SUBMITTED RESPONDENT",
+  "SUBMITTED BY Pencacah",
+  "APPROVED BY Pengawas",
+  "REJECTED BY Pengawas",
+  "REVOKED BY Pengawas",
+];
+
 // ── helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ensureDir = (fp) => mkdirSync(dirname(fp), { recursive: true });
@@ -499,13 +510,18 @@ async function crawlKabKota({ kab, sessionRef, pageSize }) {
 
 // ── export ke Excel ────────────────────────────────────────────────────────
 export async function exportToExcel(data, path) {
-  const allStatuses = new Set();
+  const presentStatuses = new Set();
   for (const d of data) {
     for (const r of d.regionSummary || []) {
-      for (const s of r.statusBreakdown || []) allStatuses.add(s.status);
+      for (const s of r.statusBreakdown || []) {
+        if (s.status) presentStatuses.add(s.status);
+      }
     }
   }
-  const statusList = [...allStatuses].sort();
+  const statusList = [
+    ...FIXED_STATUSES,
+    ...[...presentStatuses].filter((s) => !FIXED_STATUSES.includes(s)).sort(),
+  ];
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "fasih-sync-monitoring";
