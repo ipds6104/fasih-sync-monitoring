@@ -21,3 +21,5 @@ gemini.md
 # Credentials
 cerdas-*.json
 
+# Backups
+src/index.js.original

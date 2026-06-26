@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium } from "patchright"; // drop-in replacement untuk bypass F5 WAF bot detection
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -98,20 +98,23 @@ const FIXED_STATUSES = [
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ensureDir = (fp) => mkdirSync(dirname(fp), { recursive: true });
 
-// ── login via Playwright ───────────────────────────────────────────────────
+// ── login via Playwright (with Patchright & Chrome path to bypass F5 WAF) ───────────────────────────
 async function login({ verbose = false } = {}) {
   if (!USERNAME || !PASSWORD) {
     console.error("FASIH_USERNAME and FASIH_PASSWORD must be set in .env");
     process.exit(1);
   }
 
-  console.log(`→ Login sebagai ${USERNAME} ...`);
+  console.log(`→ Login sebagai ${USERNAME} via Playwright (Stealth headless/headful) ...`);
+  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 
   const browser = await chromium.launch({
     headless: HEADLESS,
+    executablePath: chromePath,
     args: [
-      "--disable-blink-features=AutomationControlled",
       "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
       "--disable-infobars",
       "--window-size=1280,800",
     ],
@@ -122,22 +125,10 @@ async function login({ verbose = false } = {}) {
     timezoneId: "Asia/Jakarta",
     viewport: { width: 1280, height: 800 },
     userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    geolocation: { latitude: -6.2088, longitude: 106.8456 },
-    permissions: ["geolocation"],
-    colorScheme: "light",
-    reducedMotion: "no-preference",
-    forcedColors: "none",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
 
   const page = await context.newPage();
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => false });
-    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, "languages", {
-      get: () => ["id-ID", "id", "en-US", "en"],
-    });
-  });
 
   try {
     await page.goto(`${BASE}/oauth2/authorization/ics`, {
@@ -170,6 +161,9 @@ async function login({ verbose = false } = {}) {
     const storageState = await context.storageState();
     writeFileSync(STORAGE_PATH, JSON.stringify(storageState, null, 2));
 
+    const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const xsrfToken = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
+
     if (verbose) {
       const userName = await page
         .$eval(".user-name", (el) => el.textContent?.trim())
@@ -181,7 +175,7 @@ async function login({ verbose = false } = {}) {
       console.log(`  ✓ Login berhasil`);
     }
 
-    return { cookies, cookieStr: cookies.map((c) => `${c.name}=${c.value}`).join("; "), xsrfToken: cookies.find((c) => c.name === "XSRF-TOKEN")?.value };
+    return { cookies, cookieStr, xsrfToken };
   } catch (err) {
     console.error(`✗ Login gagal: ${err.message}`);
     if (process.env.DEBUG) {
@@ -196,19 +190,30 @@ async function login({ verbose = false } = {}) {
   }
 }
 
-// ── refresh session cookies via Playwright (no GUI login flow) ─────────────
+// ── refresh session cookies via Playwright ─────────────────────────────────
 async function refreshSession() {
   if (!existsSync(STORAGE_PATH)) {
     return login();
   }
   console.log(`  → Refresh session via Playwright ...`);
-  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: chromePath,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
+      "--disable-infobars",
+      "--window-size=1280,800",
+    ],
+  });
   const context = await browser.newContext({
     storageState: STORAGE_PATH,
     locale: "id-ID",
-  });
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => false });
+    viewport: { width: 1280, height: 800 },
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
   const page = await context.newPage();
   try {

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js crawl",
     "login": "node src/index.js login",
-    "crawl": "node src/index.js crawl"
+    "crawl": "node src/index.js crawl",
+    "import-cookies": "node src/import-cookies.js"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +18,7 @@
     "exceljs": "^4.4.0",
     "googleapis": "^173.0.0",
     "node-cron": "^4.5.0",
+    "patchright": "^1.61.1",
     "playwright": "^1.61.0",
     "pm2": "^7.0.1"
   }
