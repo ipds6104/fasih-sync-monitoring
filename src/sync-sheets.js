@@ -94,22 +94,37 @@ export async function syncToGoogleSheets(data) {
 
   const values = [headers, ...rows];
 
-  console.log(`  → Membersihkan lembar kerja ${range}...`);
-  // Hapus data lama agar tidak tersisa jika jumlah data baru lebih sedikit
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId,
-    range,
-  });
+  let retries = 3;
+  let success = false;
+  while (retries > 0 && !success) {
+    try {
+      console.log(`  → Membersihkan lembar kerja ${range}...`);
+      // Hapus data lama agar tidak tersisa jika jumlah data baru lebih sedikit
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId,
+        range,
+      });
 
-  console.log(`  → Mengunggah ${rows.length} baris data ke Google Sheet...`);
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values },
-  });
-
-  console.log(`  ✓ Sinkronisasi Google Sheets berhasil! (${rows.length} baris diperbarui)`);
+      console.log(`  → Mengunggah ${rows.length} baris data ke Google Sheet...`);
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values },
+      });
+      
+      success = true;
+      console.log(`  ✓ Sinkronisasi Google Sheets berhasil! (${rows.length} baris diperbarui)`);
+    } catch (err) {
+      retries--;
+      console.warn(`  ⚠ Gagal sync Google Sheets: ${err.message}. Sisa retry: ${retries}`);
+      if (retries > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      } else {
+        throw err;
+      }
+    }
+  }
 }
 
 // Jalankan test secara langsung jika dipanggil dari CLI
