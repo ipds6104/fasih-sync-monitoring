@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { config } from "dotenv";
 
 config();
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COOKIES_PATH = resolve(__dirname, "..", "cookies", "fasih-sm.json");

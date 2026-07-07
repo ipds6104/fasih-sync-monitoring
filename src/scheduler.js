@@ -4,8 +4,10 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { appendFileSync, mkdirSync } from "fs";
 import { config } from "dotenv";
+import https from "https";
 
 config();
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = resolve(__dirname, "..", "results", "scheduler.log");
@@ -30,22 +32,36 @@ const KEEP_ALIVE_INTERVAL = 3 * 60 * 1000; // 3 minutes
 
 logMsg(`[Keep-Alive] Initializing keep-alive ping to ${KEEP_ALIVE_URL} every 3 minutes`);
 
-setInterval(async () => {
+const pingKeepAlive = () => {
   try {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 10000); // 10 seconds timeout
-    
-    const res = await fetch(KEEP_ALIVE_URL, {
-      method: "HEAD",
-      signal: controller.signal,
+    const req = https.request(KEEP_ALIVE_URL, {
+      method: "GET",
+      timeout: 10000,
+      rejectUnauthorized: false
+    }, (res) => {
+      logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} succeeded with status ${res.statusCode}`);
     });
-    
-    clearTimeout(id);
-    logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} succeeded with status ${res.status}`);
+
+    req.on("error", (err) => {
+      logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} failed: ${err.message}`);
+    });
+
+    req.on("timeout", () => {
+      req.destroy();
+      logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} timed out`);
+    });
+
+    req.end();
   } catch (err) {
     logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} failed: ${err.message}`);
   }
-}, KEEP_ALIVE_INTERVAL);
+};
+
+// Ping once immediately on startup to verify connectivity
+pingKeepAlive();
+
+// Start periodic interval
+setInterval(pingKeepAlive, KEEP_ALIVE_INTERVAL);
 
 cron.schedule(CRON_SCHEDULE, () => {
   logMsg(`[Scheduler] Triggered crawl job...`);

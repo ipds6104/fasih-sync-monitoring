@@ -7,6 +7,7 @@ import ExcelJS from "exceljs";
 import { syncToGoogleSheets } from "./sync-sheets.js";
 
 config();
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COOKIES_PATH = resolve(__dirname, "..", "cookies", "fasih-sm.json");
@@ -779,11 +780,28 @@ async function cmdCrawl() {
   console.log(`  Total data: ${allData.length} dari ${totalSucceeded}/${totalExpected} kab/kota`);
 
   if (allData.length > 0) {
+    let finalData = allData;
+    if (KABUPATEN_CODES.length > 0 && existsSync(OUTPUT)) {
+      console.log(`\n── Merging with existing data in ${OUTPUT} ──`);
+      try {
+        const existingData = JSON.parse(readFileSync(OUTPUT, "utf-8"));
+        const crawledCodes = new Set(kabKotaList.map((k) => k.code));
+        const remainingData = existingData.filter((item) => !crawledCodes.has(item._kabKotaCode));
+        finalData = [...remainingData, ...allData];
+        console.log(`  Existing items: ${existingData.length}`);
+        console.log(`  Items removed for crawled regions: ${existingData.length - remainingData.length}`);
+        console.log(`  New items added: ${allData.length}`);
+        console.log(`  Final combined items: ${finalData.length}`);
+      } catch (err) {
+        console.warn(`  ⚠ Gagal merge data lama, fallback menulis data baru saja: ${err.message}`);
+      }
+    }
+
     ensureDir(OUTPUT_XLSX);
-    writeFileSync(OUTPUT, JSON.stringify(allData, null, 2));
+    writeFileSync(OUTPUT, JSON.stringify(finalData, null, 2));
     console.log(`  JSON: ${OUTPUT}`);
     try {
-      const excelPath = await exportToExcel(allData, OUTPUT_XLSX);
+      const excelPath = await exportToExcel(finalData, OUTPUT_XLSX);
       console.log(`  Excel: ${excelPath}`);
     } catch (err) {
       console.error(`  ✗ Gagal ekspor Excel (mungkin file sedang dibuka/dikunci): ${err.message}`);
@@ -792,7 +810,7 @@ async function cmdCrawl() {
     if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
       console.log("\n── Step 3: Syncing to Google Sheets ─────────────────");
       try {
-        await syncToGoogleSheets(allData);
+        await syncToGoogleSheets(finalData);
       } catch (err) {
         console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
       }
