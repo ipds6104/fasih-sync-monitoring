@@ -2,7 +2,7 @@ import { chromium } from "patchright"; // drop-in replacement untuk bypass F5 WA
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from "fs";
 import ExcelJS from "exceljs";
 import { syncToGoogleSheets } from "./sync-sheets.js";
 
@@ -98,6 +98,28 @@ const FIXED_STATUSES = [
 // ── helpers ────────────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ensureDir = (fp) => mkdirSync(dirname(fp), { recursive: true });
+
+const cleanupOldBackups = (backupDir, maxKeep = 30) => {
+  try {
+    const files = readdirSync(backupDir)
+      .map((file) => ({
+        name: file,
+        path: resolve(backupDir, file),
+        mtime: statSync(resolve(backupDir, file)).mtime.getTime(),
+      }))
+      .sort((a, b) => b.mtime - a.mtime); // sort newest to oldest
+
+    if (files.length > maxKeep) {
+      const toDelete = files.slice(maxKeep);
+      for (const f of toDelete) {
+        unlinkSync(f.path);
+      }
+      console.log(`  ✓ Membersihkan ${toDelete.length} file backup lama (menyimpan ${maxKeep} terbaru)`);
+    }
+  } catch (err) {
+    console.warn(`  ⚠ Gagal membersihkan backup lama: ${err.message}`);
+  }
+};
 
 // ── login via Playwright (with Patchright & Chrome path to bypass F5 WAF) ───────────────────────────
 async function login({ verbose = false } = {}) {
@@ -452,7 +474,7 @@ async function processBatch({ pages, sessionRef, pageSize, region2Id, label }) {
 }
 
 // ── crawl 1 kab/kota ────────────────────────────────────────────────────────
-async function crawlKabKota({ kab, sessionRef, pageSize }) {
+async function crawlKabKota({ kab, sessionRef, pageSize, failedPages = [] }) {
   const { id: region2Id, code, name } = kab;
   let first = null;
   let retries = 3;
@@ -510,7 +532,10 @@ async function crawlKabKota({ kab, sessionRef, pageSize }) {
     }
   }
   const failCount = totalPages - [...allResults.values()].filter(Boolean).length;
-  if (failCount > 0) console.log(`    ⚠ ${failCount} halaman gagal permanen`);
+  if (failCount > 0) {
+    console.log(`    ⚠ ${failCount} halaman gagal permanen`);
+    failedPages.push(...failed);
+  }
   return items;
 }
 
@@ -738,7 +763,8 @@ async function cmdCrawl() {
   console.log("── Step 2: Crawling per kab/kota ────────────────────");
   const allData = [];
   const succeededKabCodes = new Set();
-  
+  const failedPagesRegistry = []; // registry to keep track of failed pages for final retry
+
   let kabKotaToCrawl = [...kabKotaList];
   let crawlAttempt = 1;
   const maxCrawlAttempts = 3;
@@ -751,10 +777,15 @@ async function cmdCrawl() {
     for (const kab of kabKotaToCrawl) {
       console.log(`  [${kab.code}] ${kab.name}`);
       try {
-        const items = await crawlKabKota({ kab, sessionRef, pageSize: PAGE_SIZE });
+        const failedPages = [];
+        const items = await crawlKabKota({ kab, sessionRef, pageSize: PAGE_SIZE, failedPages });
         console.log(`    → ${items.length} data`);
         allData.push(...items);
         succeededKabCodes.add(kab.code);
+
+        if (failedPages.length > 0) {
+          failedPagesRegistry.push({ kab, failedPages, retrievedItemsRef: items });
+        }
       } catch (err) {
         console.error(`    ✗ Gagal: ${err.message}`);
         failedThisRound.push(kab);
@@ -762,6 +793,46 @@ async function cmdCrawl() {
     }
     kabKotaToCrawl = failedThisRound;
     crawlAttempt++;
+  }
+
+  // ── Step 2.5: End-of-Run Retry Pass ───────────────────────────────────────
+  if (failedPagesRegistry.length > 0) {
+    console.log(`\n── Step 2.5: Retrying failed pages across all kab/kota (End-of-Run Retry Pass) ──`);
+    console.log(`  Menunggu 15 detik agar server bernapas...`);
+    await sleep(15000);
+
+    for (const entry of failedPagesRegistry) {
+      if (entry.failedPages.length === 0) continue;
+      console.log(`  [${entry.kab.code}] ${entry.kab.name}: Menarik ulang ${entry.failedPages.length} halaman yang gagal (${entry.failedPages.join(", ")})...`);
+
+      try {
+        const r = await processBatch({
+          pages: entry.failedPages,
+          sessionRef,
+          pageSize: PAGE_SIZE,
+          region2Id: entry.kab.id,
+          label: `    [${entry.kab.code}] end-retry`,
+        });
+
+        let resolvedCount = 0;
+        for (const [page, data] of r) {
+          if (data?.content) {
+            const newItems = [];
+            for (const item of data.content) {
+              const mapped = { ...item, _kabKotaCode: entry.kab.code, _kabKotaName: entry.kab.name };
+              newItems.push(mapped);
+              allData.push(mapped);
+            }
+            entry.retrievedItemsRef.push(...newItems);
+            entry.failedPages = entry.failedPages.filter((p) => p !== page);
+            resolvedCount++;
+          }
+        }
+        console.log(`    → Berhasil memulihkan ${resolvedCount} halaman.`);
+      } catch (err) {
+        console.error(`    ✗ Gagal melakukan retry akhir: ${err.message}`);
+      }
+    }
   }
 
   const totalExpected = kabKotaList.length;
@@ -781,19 +852,80 @@ async function cmdCrawl() {
 
   if (allData.length > 0) {
     let finalData = allData;
-    if (KABUPATEN_CODES.length > 0 && existsSync(OUTPUT)) {
-      console.log(`\n── Merging with existing data in ${OUTPUT} ──`);
+    let existingData = [];
+    if (existsSync(OUTPUT)) {
       try {
-        const existingData = JSON.parse(readFileSync(OUTPUT, "utf-8"));
+        existingData = JSON.parse(readFileSync(OUTPUT, "utf-8"));
+      } catch (err) {
+        console.warn(`  ⚠ Gagal membaca data lama untuk patching: ${err.message}`);
+      }
+    }
+
+    // ── Backup data sebelumnya ──────────────────────────────────────────────
+    if (existsSync(OUTPUT)) {
+      try {
+        const backupDir = resolve(__dirname, "..", "backups");
+        if (!existsSync(backupDir)) {
+          mkdirSync(backupDir, { recursive: true });
+        }
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const jsonBackupPath = resolve(backupDir, `progress-pencacah-${timestamp}.json`);
+        const xlsxBackupPath = resolve(backupDir, `progress-pencacah-${timestamp}.xlsx`);
+
+        // Copy JSON
+        writeFileSync(jsonBackupPath, readFileSync(OUTPUT));
+
+        // Copy XLSX
+        if (existsSync(OUTPUT_XLSX)) {
+          writeFileSync(xlsxBackupPath, readFileSync(OUTPUT_XLSX));
+        }
+        console.log(`  ✓ Backup data sebelumnya berhasil dibuat di folder 'backups/'`);
+        cleanupOldBackups(backupDir, 30);
+      } catch (err) {
+        console.warn(`  ⚠ Gagal membuat backup data lama: ${err.message}`);
+      }
+    }
+
+    // ── Smart Fallback Patch ────────────────────────────────────────────────
+    if (existingData.length > 0) {
+      console.log(`\n── Checking for missing petugas (Smart Fallback Patch) ──`);
+      const patchedData = [...allData];
+      let totalPatched = 0;
+
+      for (const kab of kabKotaList) {
+        const currentPetugas = allData.filter((p) => p._kabKotaCode === kab.code);
+        const oldPetugas = existingData.filter((p) => p._kabKotaCode === kab.code);
+
+        const currentUsernames = new Set(currentPetugas.map((p) => p.username));
+        const missingPetugas = oldPetugas.filter((p) => !currentUsernames.has(p.username));
+
+        if (missingPetugas.length > 0) {
+          console.log(`  ⚠ [${kab.code}] ${kab.name}: Ditemukan ${missingPetugas.length} petugas yang hilang di hasil crawl baru.`);
+          console.log(`    → Memulihkan data lama mereka dari backup sebagai fallback...`);
+          patchedData.push(...missingPetugas);
+          totalPatched += missingPetugas.length;
+        }
+      }
+
+      if (totalPatched > 0) {
+        console.log(`  ✓ Total ${totalPatched} data petugas berhasil dipulihkan dari run sebelumnya.`);
+        finalData = patchedData;
+      } else {
+        console.log(`  ✓ Semua petugas dari run sebelumnya lengkap di run baru.`);
+      }
+    }
+
+    // ── Merge kabupaten lain jika filter aktif ──────────────────────────────
+    if (KABUPATEN_CODES.length > 0 && existingData.length > 0) {
+      console.log(`\n── Merging with other kabupaten codes ──`);
+      try {
         const crawledCodes = new Set(kabKotaList.map((k) => k.code));
         const remainingData = existingData.filter((item) => !crawledCodes.has(item._kabKotaCode));
-        finalData = [...remainingData, ...allData];
-        console.log(`  Existing items: ${existingData.length}`);
-        console.log(`  Items removed for crawled regions: ${existingData.length - remainingData.length}`);
-        console.log(`  New items added: ${allData.length}`);
+        finalData = [...remainingData, ...finalData];
+        console.log(`  Kabupaten lain yang tidak di-crawl tetap dipertahankan.`);
         console.log(`  Final combined items: ${finalData.length}`);
       } catch (err) {
-        console.warn(`  ⚠ Gagal merge data lama, fallback menulis data baru saja: ${err.message}`);
+        console.warn(`  ⚠ Gagal merge kabupaten lain: ${err.message}`);
       }
     }
 
