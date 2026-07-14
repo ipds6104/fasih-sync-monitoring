@@ -2,7 +2,7 @@ import cron from "node-cron";
 import { spawn } from "child_process";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { appendFileSync, mkdirSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { config } from "dotenv";
 import https from "https";
 
@@ -12,6 +12,57 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = resolve(__dirname, "..", "results", "scheduler.log");
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 8 * * *";
+const LOCK_FILE = resolve(__dirname, "..", "scheduler.lock");
+
+// ── Lockfile Check (Instance Prevention) ───────────────────────────────────
+if (existsSync(LOCK_FILE)) {
+  try {
+    const oldPidStr = readFileSync(LOCK_FILE, "utf-8").trim();
+    const oldPid = parseInt(oldPidStr, 10);
+    if (!isNaN(oldPid)) {
+      // Test if process is actually running
+      process.kill(oldPid, 0);
+      console.error(`[Scheduler] Error: Another instance with PID ${oldPid} is already running.`);
+      process.exit(0); // Exit gracefully so PM2 doesn't crash loop endlessly
+    }
+  } catch (err) {
+    if (err.code === "ESRCH") {
+      // The process from the lockfile is dead, delete the stale lockfile
+      try {
+        unlinkSync(LOCK_FILE);
+      } catch {}
+    } else {
+      console.error(`[Scheduler] Error checking lock file: ${err.message}`);
+      process.exit(1);
+    }
+  }
+}
+
+// Create lockfile
+try {
+  mkdirSync(dirname(LOCK_FILE), { recursive: true });
+  writeFileSync(LOCK_FILE, process.pid.toString(), "utf-8");
+
+  // Register cleanup handlers
+  const cleanup = () => {
+    try {
+      if (existsSync(LOCK_FILE)) {
+        const currentPid = readFileSync(LOCK_FILE, "utf-8").trim();
+        if (currentPid === process.pid.toString()) {
+          unlinkSync(LOCK_FILE);
+        }
+      }
+    } catch {}
+    process.exit(0);
+  };
+
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+  process.on("exit", cleanup);
+} catch (err) {
+  console.error(`[Scheduler] Error creating lock file: ${err.message}`);
+  process.exit(1);
+}
 
 const logMsg = (msg) => {
   const ts = new Date().toISOString();

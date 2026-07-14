@@ -24,3 +24,7 @@ cerdas-*.json
 # Backups
 src/index.js.original
 backups/
+
+# Runtime locks & Scratch files
+scheduler.lock
+scratch/
