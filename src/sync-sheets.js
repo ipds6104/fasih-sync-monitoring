@@ -173,22 +173,19 @@ export async function syncDatatableToGoogleSheets(data) {
   const sheetTitle = range.split("!")[0]; // "Responden"
   const sheetExists = meta.data.sheets.some((s) => s.properties.title === sheetTitle);
 
+  let sheetId = null;
+
   if (!sheetExists) {
     console.log(`  → Membuat tab baru dengan nama "${sheetTitle}"...`);
-    await sheets.spreadsheets.batchUpdate({
+    const addResp = await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
-        requests: [
-          {
-            addSheet: {
-              properties: {
-                title: sheetTitle,
-              },
-            },
-          },
-        ],
+        requests: [{ addSheet: { properties: { title: sheetTitle } } }],
       },
     });
+    sheetId = addResp.data.replies[0].addSheet.properties.sheetId;
+  } else {
+    sheetId = meta.data.sheets.find((s) => s.properties.title === sheetTitle)?.properties.sheetId;
   }
 
   const headers = [
@@ -231,6 +228,28 @@ export async function syncDatatableToGoogleSheets(data) {
       item.longitude || "-"
     ];
   });
+
+  // Auto-expand baris sheet jika data melebihi kapasitas grid saat ini
+  const requiredRows = rows.length + 1; // +1 untuk header
+  const currentSheet = meta.data.sheets.find((s) => s.properties.title === sheetTitle);
+  const currentRowCount = currentSheet?.properties?.gridProperties?.rowCount || 1000;
+  if (sheetId !== null && requiredRows > currentRowCount) {
+    console.log(`  → Memperluas sheet "${sheetTitle}" dari ${currentRowCount} ke ${requiredRows + 1000} baris...`);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [{
+          updateSheetProperties: {
+            properties: {
+              sheetId,
+              gridProperties: { rowCount: requiredRows + 1000 },
+            },
+            fields: "gridProperties.rowCount",
+          },
+        }],
+      },
+    });
+  }
 
   let retries = 3;
   let success = false;

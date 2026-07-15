@@ -1189,17 +1189,18 @@ async function cmdCrawlDatatable() {
   console.log(`  ${slsList.join(", ")}\n`);
 
   // Inisialisasi state
+  // State file hanya menyimpan completedSlsCodes (ringan ~20KB)
+  // accumulatedData TIDAK disimpan ke state — hanya di memori
   let completedSlsCodes = [];
-  let accumulatedData = [];
+  const accumulatedData = [];        // hanya di memori
+  const seenIds = new Set();         // deduplikasi inkremental (bukan dibuat ulang tiap SLS)
 
   if (existsSync(STATE_FILE)) {
     try {
       const state = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
       completedSlsCodes = state.completedSlsCodes || state.completedKecamatans || [];
-      accumulatedData = state.accumulatedData || [];
       console.log(`  ✓ Menemukan file state. Melanjutkan progress...`);
-      console.log(`    Sudah selesai: ${completedSlsCodes.length}/${slsList.length} SLS.`);
-      console.log(`    Data terkumpul: ${accumulatedData.length} Responden.\n`);
+      console.log(`    Sudah selesai: ${completedSlsCodes.length}/${slsList.length} SLS.\n`);
     } catch (err) {
       console.warn(`  ⚠ Gagal membaca file state, mulai dari awal: ${err.message}`);
     }
@@ -1207,11 +1208,6 @@ async function cmdCrawlDatatable() {
 
   // Filter SLS yang belum selesai
   let remainingSls = slsList.filter((s) => !completedSlsCodes.includes(s));
-
-  if (DATATABLE_MAX_ROWS !== null && accumulatedData.length >= DATATABLE_MAX_ROWS) {
-    console.log(`  ✓ Batas DATATABLE_MAX_ROWS (${DATATABLE_MAX_ROWS}) sudah tercapai. Selesai.`);
-    remainingSls = [];
-  }
 
   if (remainingSls.length === 0) {
     console.log("  ✓ Semua SLS yang dibutuhkan sudah selesai ditarik.");
@@ -1260,19 +1256,19 @@ async function cmdCrawlDatatable() {
           try {
             const items = await crawlSlsDatatableDirect({ slsCode, sessionRef });
 
-            // Gabungkan data
-            const existingIds = new Set(accumulatedData.map((item) => item.id));
+            // Deduplikasi inkremental menggunakan Set persisten (bukan O(n²))
             for (const item of items) {
-              if (!existingIds.has(item.id)) {
+              if (!seenIds.has(item.id)) {
+                seenIds.add(item.id);
                 accumulatedData.push(item);
               }
             }
 
             completedSlsCodes.push(slsCode);
 
-            // Simpan state setelah setiap SLS sukses
+            // Simpan state: HANYA completedSlsCodes (ringan), bukan accumulatedData
             ensureDir(STATE_FILE);
-            writeFileSync(STATE_FILE, JSON.stringify({ completedSlsCodes, accumulatedData }, null, 2), "utf-8");
+            writeFileSync(STATE_FILE, JSON.stringify({ completedSlsCodes }, null, 2), "utf-8");
 
             // Polite delay per worker to prevent rate limits
             await sleep(DELAY_MS);
@@ -1290,19 +1286,26 @@ async function cmdCrawlDatatable() {
       }
       await Promise.all(workerPromises);
 
-      // Only keep failed ones if we haven't hit the maximum limit
-      if (DATATABLE_MAX_ROWS !== null && accumulatedData.length >= DATATABLE_MAX_ROWS) {
-        remainingSls = [];
-      } else {
-        remainingSls = failedThisRound;
-      }
+      remainingSls = failedThisRound;
       attempt++;
     }
   }
 
-  // Simpan hasil akhir
+  // Simpan hasil akhir — streaming writer agar tidak kena batas string V8
+  // JSON.stringify pada array besar (>100K item) bisa RangeError: Invalid string length
   ensureDir(FINAL_JSON);
-  writeFileSync(FINAL_JSON, JSON.stringify(accumulatedData, null, 2), "utf-8");
+  const { createWriteStream } = await import("fs");
+  await new Promise((res, rej) => {
+    const ws = createWriteStream(FINAL_JSON, { encoding: "utf-8" });
+    ws.on("error", rej);
+    ws.write("[\n");
+    for (let i = 0; i < accumulatedData.length; i++) {
+      const suffix = i < accumulatedData.length - 1 ? "," : "";
+      ws.write("  " + JSON.stringify(accumulatedData[i]) + suffix + "\n");
+    }
+    ws.write("]\n");
+    ws.end(res);
+  });
   console.log(`\n── Selesai ───────────────────────────────────────────`);
   console.log(`  Total responden terambil: ${accumulatedData.length}`);
   console.log(`  File JSON disimpan ke: ${FINAL_JSON}`);
