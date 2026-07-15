@@ -134,5 +134,16 @@ Setelah proses selesai, berkas output akan disimpan dan diperbarui di folder `re
 
 ---
 
+## ── Temuan Kunci Datatable API BPS ──────────────────────────────────────────
+
+Dari hasil reverse-engineering terhadap endpoint datatable `POST /app/api/analytic/api/v2/assignment/datatable-all-user-survey-periode`:
+1. **Status Ditemukan/Tidak**: Ditemukan bahwa kolom **`data9`** menyimpan status keberadaan responden secara real-time dari lapangan:
+   * `"1. Ya"` = Responden/Usaha **Ditemukan**.
+   * `"2. Tidak"` = Responden/Usaha **Tidak Ditemukan**.
+   * `null` / kosong = Belum diisi/diproses oleh pencacah.
+2. **Efisiensi ETL**: Informasi status penemuan ini dikembalikan secara langsung dalam payload respons datatable, sehingga tidak perlu memanggil API detail assignment (`get-by-assignment-id`) satu-per-satu. Hal ini memotong waktu sinkronisasi secara signifikan untuk skala data besar (SE2026).
+
+---
+
 ## ── Kontak & Kontribusi ───────────────────────────────────────────────────
 Proyek ini dikembangkan oleh tim monitoring BPS Kabupaten Mempawah untuk keperluan internal pemantauan progres lapangan secara real-time.
