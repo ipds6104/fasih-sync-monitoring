@@ -994,59 +994,14 @@ async function cmdCrawl() {
         console.log(`  ✓ Semua petugas dari run sebelumnya lengkap di run baru.`);
       }
     }
-
-    // ── Merge kabupaten lain jika filter aktif ──────────────────────────────
-    if (KABUPATEN_CODES.length > 0 && existingData.length > 0) {
-      console.log(`\n── Merging with other kabupaten codes ──`);
-      try {
-        const crawledCodes = new Set(kabKotaList.map((k) => k.code));
-        const remainingData = existingData.filter((item) => !crawledCodes.has(item._kabKotaCode));
-        finalData = [...remainingData, ...finalData];
-        console.log(`  Kabupaten lain yang tidak di-crawl tetap dipertahankan.`);
-        console.log(`  Final combined items: ${finalData.length}`);
-      } catch (err) {
-        console.warn(`  ⚠ Gagal merge kabupaten lain: ${err.message}`);
-      }
-    }
-
-    ensureDir(OUTPUT_XLSX);
-    writeFileSync(OUTPUT, JSON.stringify(finalData, null, 2));
-    console.log(`  JSON: ${OUTPUT}`);
-    try {
-      const excelPath = await exportToExcel(finalData, OUTPUT_XLSX);
-      console.log(`  Excel: ${excelPath}`);
-    } catch (err) {
-      console.error(`  ✗ Gagal ekspor Excel (mungkin file sedang dibuka/dikunci): ${err.message}`);
-    }
-
-    if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
-      console.log("\n── Step 3: Syncing to Google Sheets ─────────────────");
-      try {
-        await syncToGoogleSheets(finalData);
-      } catch (err) {
-        console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
-      }
-    }
-
-    if (process.env.CRAWL_DATATABLE_AFTER_PROGRESS === "true") {
-      console.log("\n── Step 4: Melanjutkan ke Penarikan Datatable Responden ──");
-      try {
-        await cmdCrawlDatatable();
-      } catch (err) {
-        console.error(`  ✗ Gagal menjalankan penarikan datatable responden: ${err.message}`);
-      }
-    }
-  } else {
-    console.log("\n  Tidak ada data yang berhasil diambil.");
   }
 }
 
-// ── crawl datatable (respondents data) by Kecamatan ────────────────────────
-async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
+async function crawlSlsDatatableDirect({ region, sessionRef }) {
   const datatableUrl = `${BASE}/app/api/analytic/api/v2/assignment/datatable-all-user-survey-periode`;
   const payload = {
     start: 0,
-    length: DATATABLE_MAX_ROWS || 1000, // batas baris per-SLS (env: DATATABLE_MAX_ROWS)
+    length: DATATABLE_MAX_ROWS || 1000,
     columns: [
       { data: "id" },
       { data: "codeIdentity" },
@@ -1065,8 +1020,14 @@ async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
       { data: "currentUserUsername" }
     ],
     order: [],
-    search: { value: slsCode, regex: false },
+    search: { value: "", regex: false },
     assignmentExtraParam: {
+      region1Id: "c6ac0779-f2c5-4873-b2bc-501fcf4ae8ac",
+      region2Id: "c7ccf55f-1706-44e6-92a1-1bcdf7c49f16",
+      region3Id: region.kecId,
+      region4Id: region.desaId,
+      region5Id: region.slsId,
+      region6Id: region.id,
       surveyPeriodId: SURVEY_PERIOD_ID,
       assignmentErrorStatusType: -1,
       filterTargetType: "TARGET_ONLY"
@@ -1101,27 +1062,23 @@ async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
       const isHtml = res.status === 200 && contentType.includes("text/html");
 
       if (res.status === 401 || res.status === 403 || isHtml) {
-        // Pola Promise-dedup: semua worker yang bersamaan await Promise yang SAMA
         if (!sessionRef.loginPromise) {
           sessionRef.loginPromise = (async () => {
-            console.warn(`    [SLS ${slsCode}] ⚠ Sesi kedaluwarsa (HTTP ${res.status}/HTML), login ulang via browser...`);
-            // Langsung login() penuh — refreshSession() tidak efektif untuk datatable
-            // karena storageState bisa stale dan tidak me-refresh sesi Keycloak di server
+            console.warn(`    [SLS ${region.fullCode}] ⚠ Sesi kedaluwarsa (HTTP ${res.status}/HTML), login ulang via browser...`);
             const result = await login();
             return result;
           })().then((creds) => {
             sessionRef.cookieStr = creds.cookieStr;
             sessionRef.xsrfToken = creds.xsrfToken;
-            console.log(`    [SLS ${slsCode}] ✓ Re-autentikasi berhasil.`);
+            console.log(`    [SLS ${region.fullCode}] ✓ Re-autentikasi berhasil.`);
             return creds;
           }).finally(() => {
             sessionRef.loginPromise = null;
           });
         } else {
-          console.log(`    [SLS ${slsCode}] ⚠ Sesi kedaluwarsa, menunggu login dari worker lain...`);
+          console.log(`    [SLS ${region.fullCode}] ⚠ Sesi kedaluwarsa, menunggu login dari worker lain...`);
         }
 
-        // Simpan referensi lokal agar tidak null setelah .finally() di worker pemicu
         const pendingLogin = sessionRef.loginPromise;
         const freshCreds = pendingLogin ? await pendingLogin : sessionRef;
         if (freshCreds && freshCreds.cookieStr) {
@@ -1129,12 +1086,10 @@ async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
           sessionRef.xsrfToken = freshCreds.xsrfToken;
         }
 
-        // Jitter delay: cegah thundering herd — semua worker jangan retry serentak
-        // WAF BPS akan menginvalidasi sesi jika melihat banyak request bersamaan
-        const jitter = Math.random() * 1500 + 500; // 500–2000ms random per worker
-        console.log(`    [SLS ${slsCode}] ✓ Sesi baru siap. Retry dalam ${Math.round(jitter)}ms...`);
+        const jitter = Math.random() * 1500 + 500;
+        console.log(`    [SLS ${region.fullCode}] ✓ Sesi baru siap. Retry dalam ${Math.round(jitter)}ms...`);
         await sleep(jitter);
-        continue; // retry dengan credentials terbaru
+        continue;
       }
 
       if (!res.ok) {
@@ -1145,7 +1100,7 @@ async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
       return data.searchData || [];
     } catch (err) {
       retries--;
-      console.warn(`    [SLS ${slsCode}] ⚠ Gagal fetch datatable: ${err.message}. Sisa retry: ${retries}`);
+      console.warn(`    [SLS ${region.fullCode}] ⚠ Gagal fetch datatable: ${err.message}. Sisa retry: ${retries}`);
       if (retries === 0) throw err;
       await sleep(3000);
     }
@@ -1155,64 +1110,58 @@ async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
 async function cmdCrawlDatatable() {
   const STATE_FILE = resolve(__dirname, "..", "results", "datatable-crawl-state.json");
   const FINAL_JSON = resolve(__dirname, "..", "results", "progress-responden.json");
+  const REGION_TREE_FILE = resolve(__dirname, "..", "results", "region-tree.json");
 
-  // Pastikan progress-pencacah.json ada
   if (!existsSync(OUTPUT)) {
     console.error(`✗ Gagal: File hasil crawl progres (${OUTPUT}) tidak ditemukan.`);
     console.error(`  Silakan jalankan 'npm run crawl' terlebih dahulu untuk menghasilkan daftar target.`);
     process.exit(1);
   }
 
-  console.log("── Memulai Datatable Crawl (Daftar Responden via SLS) ──");
-  const progressData = JSON.parse(readFileSync(OUTPUT, "utf-8"));
-
-  // Ekstrak semua kode SLS unik (16 digit) yang sesuai dengan filter KABUPATEN_CODES
-  const allSlsCodes = new Set();
-  for (const d of progressData) {
-    for (const r of d.regionSummary || []) {
-      if (r.regionCode && r.regionCode.length >= 16) {
-        const kabCode = r.regionCode.substring(2, 4);
-        if (KABUPATEN_CODES.length === 0 || KABUPATEN_CODES.includes(kabCode)) {
-          allSlsCodes.add(r.regionCode);
-        }
-      }
-    }
+  if (!existsSync(REGION_TREE_FILE)) {
+    console.error(`✗ Gagal: File region tree (${REGION_TREE_FILE}) tidak ditemukan.`);
+    console.error(`  Harap pastikan script fetch-regions.js telah berjalan.`);
+    process.exit(1);
   }
 
-  const slsList = [...allSlsCodes].sort();
-  if (slsList.length === 0) {
-    console.warn("  ⚠ Tidak menemukan kode wilayah SLS yang cocok dengan filter KABUPATEN_CODES.");
+  console.log("── Memulai Datatable Crawl (Daftar Responden via Region Tree) ──");
+  const regionTree = JSON.parse(readFileSync(REGION_TREE_FILE, "utf-8"));
+
+  const filteredRegions = regionTree.filter(region => {
+    if (region.fullCode && region.fullCode.length >= 4) {
+      const kabCode = region.fullCode.substring(2, 4);
+      return KABUPATEN_CODES.length === 0 || KABUPATEN_CODES.includes(kabCode);
+    }
+    return false;
+  }).sort((a, b) => a.fullCode.localeCompare(b.fullCode));
+
+  if (filteredRegions.length === 0) {
+    console.warn("  ⚠ Tidak menemukan wilayah (Sub-SLS) yang cocok dengan filter KABUPATEN_CODES.");
     return;
   }
 
-  console.log(`  Daftar SLS yang akan ditarik (${slsList.length}):`);
-  console.log(`  ${slsList.join(", ")}\n`);
+  console.log(`  Total Sub-SLS (Level 6) yang akan ditarik: ${filteredRegions.length}\n`);
 
-  // Inisialisasi state
-  // State file hanya menyimpan completedSlsCodes (ringan ~20KB)
-  // accumulatedData TIDAK disimpan ke state — hanya di memori
-  let completedSlsCodes = [];
-  const accumulatedData = [];        // hanya di memori
-  const seenIds = new Set();         // deduplikasi inkremental (bukan dibuat ulang tiap SLS)
+  let completedRegionFullCodes = [];
+  const accumulatedData = [];
+  const seenIds = new Set();
 
   if (existsSync(STATE_FILE)) {
     try {
       const state = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
-      completedSlsCodes = state.completedSlsCodes || state.completedKecamatans || [];
+      completedRegionFullCodes = state.completedRegionFullCodes || state.completedSlsCodes || [];
       console.log(`  ✓ Menemukan file state. Melanjutkan progress...`);
-      console.log(`    Sudah selesai: ${completedSlsCodes.length}/${slsList.length} SLS.\n`);
+      console.log(`    Sudah selesai: ${completedRegionFullCodes.length}/${filteredRegions.length} wilayah.\n`);
     } catch (err) {
       console.warn(`  ⚠ Gagal membaca file state, mulai dari awal: ${err.message}`);
     }
   }
 
-  // Filter SLS yang belum selesai
-  let remainingSls = slsList.filter((s) => !completedSlsCodes.includes(s));
+  let remainingRegions = filteredRegions.filter((r) => !completedRegionFullCodes.includes(r.fullCode));
 
-  if (remainingSls.length === 0) {
-    console.log("  ✓ Semua SLS yang dibutuhkan sudah selesai ditarik.");
+  if (remainingRegions.length === 0) {
+    console.log("  ✓ Semua wilayah yang dibutuhkan sudah selesai ditarik.");
   } else {
-    // Inisialisasi sessionRef
     const sessionRef = { cookieStr: null, xsrfToken: null };
     try {
       if (!existsSync(COOKIES_PATH)) {
@@ -1227,36 +1176,33 @@ async function cmdCrawlDatatable() {
       return;
     }
 
-    console.log("── Step 2: Crawling datatable per SLS (Parallel Direct HTTP Workers) ─");
+    console.log("── Step 2: Crawling datatable per Sub-SLS (Parallel Direct HTTP Workers) ─");
     let attempt = 1;
     const maxAttempts = 3;
 
-    while (remainingSls.length > 0 && attempt <= maxAttempts) {
+    while (remainingRegions.length > 0 && attempt <= maxAttempts) {
       if (attempt > 1) {
-        console.log(`\n── [Datatable Attempt ${attempt}/${maxAttempts}] Menarik ulang SLS yang gagal ──`);
+        console.log(`\n── [Datatable Attempt ${attempt}/${maxAttempts}] Menarik ulang wilayah yang gagal ──`);
         console.log(`  Menunggu 10 detik agar server bernapas...`);
         await sleep(10000);
       }
 
       const failedThisRound = [];
-      let slsIndex = 0;
+      let regionIndex = 0;
 
-      // Shared function for workers to pull tasks
       const worker = async (workerId) => {
-        while (slsIndex < remainingSls.length) {
+        while (regionIndex < remainingRegions.length) {
+          const currentIndex = regionIndex++;
+          if (currentIndex >= remainingRegions.length) break;
 
-          const currentIndex = slsIndex++;
-          if (currentIndex >= remainingSls.length) break;
-
-          const slsCode = remainingSls[currentIndex];
-          const totalProcessed = completedSlsCodes.length;
-          const percent = Math.round((totalProcessed / slsList.length) * 100);
-          console.log(`  [Worker ${workerId}] [${totalProcessed + 1}/${slsList.length}] (${percent}%) Menarik SLS ${slsCode}...`);
+          const region = remainingRegions[currentIndex];
+          const totalProcessed = completedRegionFullCodes.length;
+          const percent = Math.round((totalProcessed / filteredRegions.length) * 100);
+          console.log(`  [Worker ${workerId}] [${totalProcessed + 1}/${filteredRegions.length}] (${percent}%) Menarik SLS ${region.fullCode} (Kec ${region.kecName}, Desa ${region.desaName})...`);
 
           try {
-            const items = await crawlSlsDatatableDirect({ slsCode, sessionRef });
+            const items = await crawlSlsDatatableDirect({ region, sessionRef });
 
-            // Deduplikasi inkremental menggunakan Set persisten (bukan O(n²))
             for (const item of items) {
               if (!seenIds.has(item.id)) {
                 seenIds.add(item.id);
@@ -1264,35 +1210,30 @@ async function cmdCrawlDatatable() {
               }
             }
 
-            completedSlsCodes.push(slsCode);
+            completedRegionFullCodes.push(region.fullCode);
 
-            // Simpan state: HANYA completedSlsCodes (ringan), bukan accumulatedData
             ensureDir(STATE_FILE);
-            writeFileSync(STATE_FILE, JSON.stringify({ completedSlsCodes }, null, 2), "utf-8");
+            writeFileSync(STATE_FILE, JSON.stringify({ completedRegionFullCodes }, null, 2), "utf-8");
 
-            // Polite delay per worker to prevent rate limits
             await sleep(DELAY_MS);
           } catch (err) {
-            console.error(`    ✗ [Worker ${workerId}] Gagal menarik SLS ${slsCode}: ${err.message}`);
-            failedThisRound.push(slsCode);
+            console.error(`    ✗ [Worker ${workerId}] Gagal menarik SLS ${region.fullCode}: ${err.message}`);
+            failedThisRound.push(region);
           }
         }
       };
 
-      // Launch all workers in parallel
       const workerPromises = [];
       for (let i = 0; i < DATATABLE_CONCURRENCY; i++) {
         workerPromises.push(worker(i));
       }
       await Promise.all(workerPromises);
 
-      remainingSls = failedThisRound;
+      remainingRegions = failedThisRound;
       attempt++;
     }
   }
 
-  // Simpan hasil akhir — streaming writer agar tidak kena batas string V8
-  // JSON.stringify pada array besar (>100K item) bisa RangeError: Invalid string length
   ensureDir(FINAL_JSON);
   const { createWriteStream } = await import("fs");
   await new Promise((res, rej) => {
@@ -1310,18 +1251,17 @@ async function cmdCrawlDatatable() {
   console.log(`  Total responden terambil: ${accumulatedData.length}`);
   console.log(`  File JSON disimpan ke: ${FINAL_JSON}`);
 
-  const totalExpected = slsList.length;
-  const totalSucceeded = completedSlsCodes.length;
+  const totalExpected = filteredRegions.length;
+  const totalSucceeded = completedRegionFullCodes.length;
   console.log(`\n── Validasi Akhir Datatable ───────────────────────────`);
-  console.log(`  Target SLS: ${totalExpected}`);
+  console.log(`  Target Wilayah: ${totalExpected}`);
   console.log(`  Selesai ditarik: ${totalSucceeded}`);
 
   if (totalSucceeded < totalExpected) {
-    console.warn(`  ⚠ PERINGATAN: ${totalExpected - totalSucceeded} SLS gagal ditarik secara permanen!`);
+    console.warn(`  ⚠ PERINGATAN: ${totalExpected - totalSucceeded} wilayah gagal ditarik secara permanen!`);
     console.warn(`  File state tetap dipertahankan untuk resume berikutnya.`);
   } else {
-    console.log(`  ✓ Semua SLS berhasil ditarik.`);
-    // Hapus file state jika sukses total
+    console.log(`  ✓ Semua wilayah berhasil ditarik.`);
     if (existsSync(STATE_FILE)) {
       try {
         unlinkSync(STATE_FILE);
@@ -1329,7 +1269,6 @@ async function cmdCrawlDatatable() {
     }
   }
 
-  // Google Sheets Sync
   if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
     console.log("\n── Step 3: Syncing Datatable to Google Sheets ───────");
     try {
@@ -1353,3 +1292,5 @@ if (cmd === "login") {
   console.error("Usage: node src/index.js [login|crawl|crawl-datatable]");
   process.exit(1);
 }
+
+
