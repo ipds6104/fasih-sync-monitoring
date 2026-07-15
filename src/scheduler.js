@@ -114,20 +114,45 @@ pingKeepAlive();
 // Start periodic interval
 setInterval(pingKeepAlive, KEEP_ALIVE_INTERVAL);
 
-cron.schedule(CRON_SCHEDULE, () => {
-  logMsg(`[Scheduler] Triggered crawl job...`);
-  
-  const child = spawn("node", ["src/index.js", "crawl"], {
-    cwd: resolve(__dirname, ".."),
-    stdio: "inherit",
+// ── Helper: jalankan satu sub-command dan return Promise ───────────────────
+const runCommand = (command) =>
+  new Promise((onDone, onFail) => {
+    logMsg(`[Scheduler] Menjalankan: node src/index.js ${command}`);
+
+    const child = spawn("node", ["src/index.js", command], {
+      cwd: resolve(__dirname, ".."),
+      stdio: "inherit",
+    });
+
+    child.on("close", (code) => {
+      logMsg(`[Scheduler] '${command}' selesai dengan exit code: ${code}`);
+      if (code === 0 || code === null) {
+        onDone(code);
+      } else {
+        onFail(new Error(`Command '${command}' exited with code ${code}`));
+      }
+    });
+
+    child.on("error", (err) => {
+      logMsg(`[Scheduler] Error spawning '${command}': ${err.message}`);
+      onFail(err);
+    });
   });
 
-  child.on("close", (code) => {
-    logMsg(`[Scheduler] Crawl job completed with exit code: ${code}`);
-  });
+// ── Cron Job ────────────────────────────────────────────────────────────────
+cron.schedule(CRON_SCHEDULE, async () => {
+  logMsg(`[Scheduler] ── Mulai job terjadwal ──`);
 
-  child.on("error", (err) => {
-    logMsg(`[Scheduler] Error spawning crawl job: ${err.message}`);
-  });
+  try {
+    // Tahap 1: Tarik progress pencacah per SLS
+    await runCommand("crawl");
+
+    // Tahap 2: Tarik datatable responden (dijalankan setelah crawl selesai)
+    logMsg(`[Scheduler] ── Progress selesai. Melanjutkan ke datatable crawl... ──`);
+    await runCommand("crawl-datatable");
+
+    logMsg(`[Scheduler] ── Semua job selesai ──`);
+  } catch (err) {
+    logMsg(`[Scheduler] ⚠ Job gagal: ${err.message}`);
+  }
 });
-

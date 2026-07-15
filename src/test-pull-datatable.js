@@ -2,10 +2,10 @@ import { chromium } from "patchright";
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
-import { existsSync, writeFileSync } from "fs";
+import { writeFileSync } from "fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-config({ path: resolve(__dirname, "..", "..", "fasih-explorer", ".env") });
+config({ path: resolve(__dirname, "..", ".env") });
 
 const BASE = "https://fasih-sm.bps.go.id";
 const USERNAME = process.env.FASIH_USERNAME;
@@ -34,7 +34,6 @@ async function main() {
 
   const context = await browser.newContext({
     locale: "id-ID",
-    timezoneId: "Asia/Jakarta",
     viewport: { width: 1280, height: 800 },
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
@@ -54,38 +53,23 @@ async function main() {
     await page.waitForURL((url) => url.hostname.includes("fasih-sm.bps.go.id"), { timeout: 30000 });
     
     console.log("→ Waiting for success selectors...");
-    const successSelectors = [
-      "app-root .dropdown-user",
-      "app-root .user-name",
-      "form[action='/logout']",
-      ".card-title",
-    ];
+    const successSelectors = ["app-root .dropdown-user", "app-root .user-name", "form[action='/logout']", ".card-title"];
     await page.waitForSelector(successSelectors.join(","), { timeout: 30000 });
     
     console.log("→ Navigating to dashboard /app...");
     await page.goto(`${BASE}/app`, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
 
     const cookies = await context.cookies();
-    const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     const xsrfToken = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
 
-    console.log("✓ Session established!");
-    await browser.close();
-
-    const headers = {
-      "accept": "application/json",
-      "content-type": "application/json",
-      "x-xsrf-token": xsrfToken,
-      cookie: cookieStr,
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    };
+    console.log("✓ Session established! XSRF:", xsrfToken);
 
     const datatableUrl = `${BASE}/app/api/analytic/api/v2/assignment/datatable-all-user-survey-periode`;
     
     const payload = {
       start: 0,
-      length: 100,
+      length: 10, // just pull 10 rows for testing
       columns: [
         { data: "id", orderable: true },
         { data: "codeIdentity", orderable: true },
@@ -109,40 +93,38 @@ async function main() {
       }
     };
 
-    console.log("→ Querying datatable-all-user-survey-periode...");
-    const res = await fetch(datatableUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload)
-    });
+    console.log("→ Querying datatable via page.evaluate...");
+    const response = await page.evaluate(async ({ datatableUrl, payload, xsrfToken }) => {
+      const res = await fetch(datatableUrl, {
+        method: "POST",
+        headers: {
+          "accept": "application/json",
+          "content-type": "application/json",
+          "x-xsrf-token": xsrfToken || ""
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }, { datatableUrl, payload, xsrfToken });
 
-    if (res.ok) {
-      const data = await res.json();
-      const rows = data.searchData || [];
-      console.log(`\n🟢 Status code: ${res.status}`);
-      console.log(`🟢 Returned rows count: ${rows.length}`);
-      
-      if (rows.length > 0) {
-        console.log("\n🟢 Printing sample rows with codeIdentity, data1, data9, and assignmentStatusAlias:");
-        rows.slice(0, 15).forEach((row, idx) => {
-          console.log(`   [${idx + 1}] ID: ${row.id} | Code: ${row.codeIdentity}`);
-          console.log(`       data1 (Nama): ${row.data1}`);
-          console.log(`       data9 (Status Ditemukan?): ${row.data9 || "N/A (Kosong)"}`);
-          console.log(`       Workflow Status: ${row.assignmentStatusAlias}`);
-          console.log("------------------------------------------------------------------");
-        });
-      } else {
-        console.log("⚠️ Datatable returned 0 rows.");
-      }
-    } else {
-      console.error(`❌ API call failed with status: ${res.status}`);
+    console.log("🟢 Datatable response received!");
+    console.log("🟢 Total Records:", response.recordsTotal);
+    console.log("🟢 Filtered Records:", response.recordsFiltered);
+    console.log("🟢 SearchData length:", response.searchData?.length || 0);
+
+    if (response.searchData && response.searchData.length > 0) {
+      console.log("🟢 Sample Row:", JSON.stringify(response.searchData[0], null, 2));
+      writeFileSync("scratch/datatable_sample.json", JSON.stringify(response, null, 2), "utf-8");
+      console.log("🟢 Full sample response written to scratch/datatable_sample.json");
     }
 
   } catch (err) {
     console.error("❌ Exception:", err.message);
-    try {
-      await browser.close();
-    } catch {}
+  } finally {
+    console.log("→ Closing browser...");
+    await browser.close();
+    console.log("→ Browser closed.");
   }
 }
 

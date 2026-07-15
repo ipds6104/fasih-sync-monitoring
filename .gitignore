@@ -1,30 +1,56 @@
+# ── Dependencies ─────────────────────────────────────────────────────────────
 node_modules/
-.env
-cookies/
-results/
-debug-*.png
 
-# OS
+# ── Environment & Credentials ─────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+cookies/
+*.key
+*.pem
+# Google Cloud service account credentials
+*-credentials.json
+cerdas-*.json
+google-cloud-*.json
+service-account-*.json
+
+# ── Results & Data ─────────────────────────────────────────────────────────────
+results/
+
+# ── Debug Artifacts ────────────────────────────────────────────────────────────
+debug-*.png
+debug-*.json
+
+# ── Playwright / Browser Cache ─────────────────────────────────────────────────
+patchright-browsers/
+playwright-browsers/
+ms-playwright/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+Desktop.ini
 __MACOSX/
 
-# Editors
+# ── Editors ───────────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 
-# Gemini
+# ── Gemini / AI Agent ─────────────────────────────────────────────────────────
 gemini.md
+GEMINI.md
+.gemini/
 
-# Credentials
-cerdas-*.json
-
-# Backups
+# ── Backups ───────────────────────────────────────────────────────────────────
 src/index.js.original
 backups/
 
-# Runtime locks & Scratch files
+# ── Runtime locks & Scratch files ─────────────────────────────────────────────
 scheduler.lock
 scratch/

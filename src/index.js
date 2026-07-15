@@ -4,7 +4,7 @@ import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from "fs";
 import ExcelJS from "exceljs";
-import { syncToGoogleSheets } from "./sync-sheets.js";
+import { syncToGoogleSheets, syncDatatableToGoogleSheets } from "./sync-sheets.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -59,6 +59,8 @@ const PAGE_SIZE = Number(process.env.PAGE_SIZE) || 10;
 const CONCURRENCY = Number(process.env.CONCURRENCY) || 3;
 const DELAY_MS = Number(process.env.DELAY_MS) || 1000;
 const MAX_RETRIES = Number(process.env.MAX_RETRIES) || 3;
+const DATATABLE_MAX_ROWS = process.env.DATATABLE_MAX_ROWS ? Number(process.env.DATATABLE_MAX_ROWS) : null;
+const DATATABLE_CONCURRENCY = Number(process.env.DATATABLE_CONCURRENCY) || 3;
 const KABUPATEN_CODES = (process.env.KABUPATEN_CODES || "")
   .split(",")
   .map((s) => s.trim())
@@ -263,6 +265,64 @@ async function refreshSession() {
   } finally {
     await browser.close();
   }
+}
+
+// ── launch stealth browser helper for persistent datatable crawl ───────────
+async function launchStealthBrowser() {
+  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const browser = await chromium.launch({
+    headless: HEADLESS,
+    executablePath: chromePath,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
+      "--disable-infobars",
+      "--window-size=1280,800",
+    ],
+  });
+
+  const context = await browser.newContext({
+    storageState: existsSync(STORAGE_PATH) ? STORAGE_PATH : undefined,
+    locale: "id-ID",
+    viewport: { width: 1280, height: 800 },
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  });
+
+  const page = await context.newPage();
+  try {
+    await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 45000 });
+    // Check if redirected to SSO
+    if (page.url().includes("sso.bps.go.id")) {
+      console.log("  → Session expired, logging in via UI...");
+      await page.waitForSelector(KC_USERNAME, { timeout: 15_000 });
+      await page.fill(KC_USERNAME, USERNAME);
+      await page.fill(KC_PASSWORD, PASSWORD);
+      await page.click(KC_SUBMIT);
+
+      await page.waitForURL(
+        (url) => url.hostname.includes("fasih-sm.bps.go.id"),
+        { timeout: 30_000 }
+      );
+      await page.waitForSelector(SUCCESS_SELECTORS.join(","), { timeout: 20_000 });
+
+      // Save credentials
+      const cookies = await context.cookies();
+      ensureDir(COOKIES_PATH);
+      writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+      const storageState = await context.storageState();
+      writeFileSync(STORAGE_PATH, JSON.stringify(storageState, null, 2));
+      console.log("  ✓ Login sukses via UI.");
+    } else {
+      console.log("  ✓ Sesi browser aktif dimuat.");
+    }
+  } catch (err) {
+    console.error(`  ✗ Gagal inisialisasi browser stealth: ${err.message}`);
+    await browser.close();
+    throw err;
+  }
+  return { browser, page };
 }
 
 // ── fetch 1 halaman (with auto-relogin) ────────────────────────────────────
@@ -967,8 +1027,313 @@ async function cmdCrawl() {
         console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
       }
     }
+
+    if (process.env.CRAWL_DATATABLE_AFTER_PROGRESS === "true") {
+      console.log("\n── Step 4: Melanjutkan ke Penarikan Datatable Responden ──");
+      try {
+        await cmdCrawlDatatable();
+      } catch (err) {
+        console.error(`  ✗ Gagal menjalankan penarikan datatable responden: ${err.message}`);
+      }
+    }
   } else {
     console.log("\n  Tidak ada data yang berhasil diambil.");
+  }
+}
+
+// ── crawl datatable (respondents data) by Kecamatan ────────────────────────
+async function crawlSlsDatatableDirect({ slsCode, sessionRef }) {
+  const datatableUrl = `${BASE}/app/api/analytic/api/v2/assignment/datatable-all-user-survey-periode`;
+  const payload = {
+    start: 0,
+    length: DATATABLE_MAX_ROWS || 1000, // batas baris per-SLS (env: DATATABLE_MAX_ROWS)
+    columns: [
+      { data: "id" },
+      { data: "codeIdentity" },
+      { data: "data1" },
+      { data: "data2" },
+      { data: "data3" },
+      { data: "data4" },
+      { data: "data5" },
+      { data: "data6" },
+      { data: "data7" },
+      { data: "data8" },
+      { data: "data9" },
+      { data: "data10" },
+      { data: "assignmentStatusAlias" },
+      { data: "currentUserFullname" },
+      { data: "currentUserUsername" }
+    ],
+    order: [],
+    search: { value: slsCode, regex: false },
+    assignmentExtraParam: {
+      surveyPeriodId: SURVEY_PERIOD_ID,
+      assignmentErrorStatusType: -1,
+      filterTargetType: "TARGET_ONLY"
+    }
+  };
+
+  const doFetch = async (cs, xt) =>
+    fetch(datatableUrl, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "x-xsrf-token": xt || "",
+        cookie: cs,
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "accept-language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+      },
+      body: JSON.stringify(payload)
+    });
+
+  let retries = 3;
+  while (retries > 0) {
+    try {
+      const res = await doFetch(sessionRef.cookieStr, sessionRef.xsrfToken);
+      const contentType = res.headers.get("content-type") || "";
+      const isHtml = res.status === 200 && contentType.includes("text/html");
+
+      if (res.status === 401 || res.status === 403 || isHtml) {
+        // Pola Promise-dedup: semua worker yang bersamaan await Promise yang SAMA
+        if (!sessionRef.loginPromise) {
+          sessionRef.loginPromise = (async () => {
+            console.warn(`    [SLS ${slsCode}] ⚠ Sesi kedaluwarsa (HTTP ${res.status}/HTML), login ulang via browser...`);
+            // Langsung login() penuh — refreshSession() tidak efektif untuk datatable
+            // karena storageState bisa stale dan tidak me-refresh sesi Keycloak di server
+            const result = await login();
+            return result;
+          })().then((creds) => {
+            sessionRef.cookieStr = creds.cookieStr;
+            sessionRef.xsrfToken = creds.xsrfToken;
+            console.log(`    [SLS ${slsCode}] ✓ Re-autentikasi berhasil.`);
+            return creds;
+          }).finally(() => {
+            sessionRef.loginPromise = null;
+          });
+        } else {
+          console.log(`    [SLS ${slsCode}] ⚠ Sesi kedaluwarsa, menunggu login dari worker lain...`);
+        }
+
+        // Simpan referensi lokal agar tidak null setelah .finally() di worker pemicu
+        const pendingLogin = sessionRef.loginPromise;
+        const freshCreds = pendingLogin ? await pendingLogin : sessionRef;
+        if (freshCreds && freshCreds.cookieStr) {
+          sessionRef.cookieStr = freshCreds.cookieStr;
+          sessionRef.xsrfToken = freshCreds.xsrfToken;
+        }
+
+        // Jitter delay: cegah thundering herd — semua worker jangan retry serentak
+        // WAF BPS akan menginvalidasi sesi jika melihat banyak request bersamaan
+        const jitter = Math.random() * 1500 + 500; // 500–2000ms random per worker
+        console.log(`    [SLS ${slsCode}] ✓ Sesi baru siap. Retry dalam ${Math.round(jitter)}ms...`);
+        await sleep(jitter);
+        continue; // retry dengan credentials terbaru
+      }
+
+      if (!res.ok) {
+        throw new Error(`HTTP status ${res.status}`);
+      }
+
+      const data = await res.json();
+      return data.searchData || [];
+    } catch (err) {
+      retries--;
+      console.warn(`    [SLS ${slsCode}] ⚠ Gagal fetch datatable: ${err.message}. Sisa retry: ${retries}`);
+      if (retries === 0) throw err;
+      await sleep(3000);
+    }
+  }
+}
+
+async function cmdCrawlDatatable() {
+  const STATE_FILE = resolve(__dirname, "..", "results", "datatable-crawl-state.json");
+  const FINAL_JSON = resolve(__dirname, "..", "results", "progress-responden.json");
+
+  // Pastikan progress-pencacah.json ada
+  if (!existsSync(OUTPUT)) {
+    console.error(`✗ Gagal: File hasil crawl progres (${OUTPUT}) tidak ditemukan.`);
+    console.error(`  Silakan jalankan 'npm run crawl' terlebih dahulu untuk menghasilkan daftar target.`);
+    process.exit(1);
+  }
+
+  console.log("── Memulai Datatable Crawl (Daftar Responden via SLS) ──");
+  const progressData = JSON.parse(readFileSync(OUTPUT, "utf-8"));
+
+  // Ekstrak semua kode SLS unik (16 digit) yang sesuai dengan filter KABUPATEN_CODES
+  const allSlsCodes = new Set();
+  for (const d of progressData) {
+    for (const r of d.regionSummary || []) {
+      if (r.regionCode && r.regionCode.length >= 16) {
+        const kabCode = r.regionCode.substring(2, 4);
+        if (KABUPATEN_CODES.length === 0 || KABUPATEN_CODES.includes(kabCode)) {
+          allSlsCodes.add(r.regionCode);
+        }
+      }
+    }
+  }
+
+  const slsList = [...allSlsCodes].sort();
+  if (slsList.length === 0) {
+    console.warn("  ⚠ Tidak menemukan kode wilayah SLS yang cocok dengan filter KABUPATEN_CODES.");
+    return;
+  }
+
+  console.log(`  Daftar SLS yang akan ditarik (${slsList.length}):`);
+  console.log(`  ${slsList.join(", ")}\n`);
+
+  // Inisialisasi state
+  let completedSlsCodes = [];
+  let accumulatedData = [];
+
+  if (existsSync(STATE_FILE)) {
+    try {
+      const state = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+      completedSlsCodes = state.completedSlsCodes || state.completedKecamatans || [];
+      accumulatedData = state.accumulatedData || [];
+      console.log(`  ✓ Menemukan file state. Melanjutkan progress...`);
+      console.log(`    Sudah selesai: ${completedSlsCodes.length}/${slsList.length} SLS.`);
+      console.log(`    Data terkumpul: ${accumulatedData.length} Responden.\n`);
+    } catch (err) {
+      console.warn(`  ⚠ Gagal membaca file state, mulai dari awal: ${err.message}`);
+    }
+  }
+
+  // Filter SLS yang belum selesai
+  let remainingSls = slsList.filter((s) => !completedSlsCodes.includes(s));
+
+  if (DATATABLE_MAX_ROWS !== null && accumulatedData.length >= DATATABLE_MAX_ROWS) {
+    console.log(`  ✓ Batas DATATABLE_MAX_ROWS (${DATATABLE_MAX_ROWS}) sudah tercapai. Selesai.`);
+    remainingSls = [];
+  }
+
+  if (remainingSls.length === 0) {
+    console.log("  ✓ Semua SLS yang dibutuhkan sudah selesai ditarik.");
+  } else {
+    // Inisialisasi sessionRef
+    const sessionRef = { cookieStr: null, xsrfToken: null };
+    try {
+      if (!existsSync(COOKIES_PATH)) {
+        console.log("  → Session belum ada, login via browser terlebih dahulu...");
+        await login();
+      }
+      const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
+      sessionRef.cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+      sessionRef.xsrfToken = cookies.find((c) => c.name === "XSRF-TOKEN")?.value;
+    } catch (err) {
+      console.error(`  ✗ Gagal memuat session: ${err.message}`);
+      return;
+    }
+
+    console.log("── Step 2: Crawling datatable per SLS (Parallel Direct HTTP Workers) ─");
+    let attempt = 1;
+    const maxAttempts = 3;
+
+    while (remainingSls.length > 0 && attempt <= maxAttempts) {
+      if (attempt > 1) {
+        console.log(`\n── [Datatable Attempt ${attempt}/${maxAttempts}] Menarik ulang SLS yang gagal ──`);
+        console.log(`  Menunggu 10 detik agar server bernapas...`);
+        await sleep(10000);
+      }
+
+      const failedThisRound = [];
+      let slsIndex = 0;
+
+      // Shared function for workers to pull tasks
+      const worker = async (workerId) => {
+        while (slsIndex < remainingSls.length) {
+
+          const currentIndex = slsIndex++;
+          if (currentIndex >= remainingSls.length) break;
+
+          const slsCode = remainingSls[currentIndex];
+          const totalProcessed = completedSlsCodes.length;
+          const percent = Math.round((totalProcessed / slsList.length) * 100);
+          console.log(`  [Worker ${workerId}] [${totalProcessed + 1}/${slsList.length}] (${percent}%) Menarik SLS ${slsCode}...`);
+
+          try {
+            const items = await crawlSlsDatatableDirect({ slsCode, sessionRef });
+
+            // Gabungkan data
+            const existingIds = new Set(accumulatedData.map((item) => item.id));
+            for (const item of items) {
+              if (!existingIds.has(item.id)) {
+                accumulatedData.push(item);
+              }
+            }
+
+            completedSlsCodes.push(slsCode);
+
+            // Simpan state setelah setiap SLS sukses
+            ensureDir(STATE_FILE);
+            writeFileSync(STATE_FILE, JSON.stringify({ completedSlsCodes, accumulatedData }, null, 2), "utf-8");
+
+            // Polite delay per worker to prevent rate limits
+            await sleep(DELAY_MS);
+          } catch (err) {
+            console.error(`    ✗ [Worker ${workerId}] Gagal menarik SLS ${slsCode}: ${err.message}`);
+            failedThisRound.push(slsCode);
+          }
+        }
+      };
+
+      // Launch all workers in parallel
+      const workerPromises = [];
+      for (let i = 0; i < DATATABLE_CONCURRENCY; i++) {
+        workerPromises.push(worker(i));
+      }
+      await Promise.all(workerPromises);
+
+      // Only keep failed ones if we haven't hit the maximum limit
+      if (DATATABLE_MAX_ROWS !== null && accumulatedData.length >= DATATABLE_MAX_ROWS) {
+        remainingSls = [];
+      } else {
+        remainingSls = failedThisRound;
+      }
+      attempt++;
+    }
+  }
+
+  // Simpan hasil akhir
+  ensureDir(FINAL_JSON);
+  writeFileSync(FINAL_JSON, JSON.stringify(accumulatedData, null, 2), "utf-8");
+  console.log(`\n── Selesai ───────────────────────────────────────────`);
+  console.log(`  Total responden terambil: ${accumulatedData.length}`);
+  console.log(`  File JSON disimpan ke: ${FINAL_JSON}`);
+
+  const totalExpected = slsList.length;
+  const totalSucceeded = completedSlsCodes.length;
+  console.log(`\n── Validasi Akhir Datatable ───────────────────────────`);
+  console.log(`  Target SLS: ${totalExpected}`);
+  console.log(`  Selesai ditarik: ${totalSucceeded}`);
+
+  if (totalSucceeded < totalExpected) {
+    console.warn(`  ⚠ PERINGATAN: ${totalExpected - totalSucceeded} SLS gagal ditarik secara permanen!`);
+    console.warn(`  File state tetap dipertahankan untuk resume berikutnya.`);
+  } else {
+    console.log(`  ✓ Semua SLS berhasil ditarik.`);
+    // Hapus file state jika sukses total
+    if (existsSync(STATE_FILE)) {
+      try {
+        unlinkSync(STATE_FILE);
+      } catch {}
+    }
+  }
+
+  // Google Sheets Sync
+  if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
+    console.log("\n── Step 3: Syncing Datatable to Google Sheets ───────");
+    try {
+      await syncDatatableToGoogleSheets(accumulatedData);
+    } catch (err) {
+      console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
+    }
   }
 }
 
@@ -978,8 +1343,10 @@ if (cmd === "login") {
   cmdLogin().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "crawl") {
   cmdCrawl().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "crawl-datatable") {
+  cmdCrawlDatatable().catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable]");
   process.exit(1);
 }

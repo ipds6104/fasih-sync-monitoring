@@ -92,8 +92,7 @@ export async function syncToGoogleSheets(data) {
     }
   }
 
-  const values = [headers, ...rows];
-
+  const sheetTitle = range.split("!")[0] || "6100";
   let retries = 3;
   let success = false;
   while (retries > 0 && !success) {
@@ -106,15 +105,171 @@ export async function syncToGoogleSheets(data) {
       });
 
       console.log(`  → Mengunggah ${rows.length} baris data ke Google Sheet...`);
+      const chunkSize = 10000;
+
+      // 1. Kirim chunk pertama (termasuk headers)
+      const firstChunk = [headers, ...rows.slice(0, chunkSize)];
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range,
+        range: `${sheetTitle}!A1`,
         valueInputOption: "USER_ENTERED",
-        requestBody: { values },
+        requestBody: { values: firstChunk },
       });
+
+      // 2. Kirim chunk berikutnya
+      for (let i = chunkSize; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        const startRow = i + 2;
+        console.log(`    → Mengunggah baris ${startRow} - ${startRow + chunk.length - 1} ke tab "${sheetTitle}"...`);
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${sheetTitle}!A${startRow}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: chunk },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // Polite delay to avoid rate limit
+      }
       
       success = true;
       console.log(`  ✓ Sinkronisasi Google Sheets berhasil! (${rows.length} baris diperbarui)`);
+    } catch (err) {
+      retries--;
+      console.warn(`  ⚠ Gagal sync Google Sheets: ${err.message}. Sisa retry: ${retries}`);
+      if (retries > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+export async function syncDatatableToGoogleSheets(data) {
+  const spreadsheetId = process.env.SPREADSHEET_ID;
+  const range = process.env.SPREADSHEET_DATATABLE_RANGE || "Responden!A1";
+
+  if (!spreadsheetId || spreadsheetId === "YOUR_SPREADSHEET_ID_HERE") {
+    console.error("  ✗ Gagal sync datatable: SPREADSHEET_ID belum diset di .env");
+    return;
+  }
+
+  if (!existsSync(CREDENTIALS_PATH)) {
+    console.error(`  ✗ Gagal sync datatable: File credentials Google API tidak ditemukan di ${CREDENTIALS_PATH}`);
+    return;
+  }
+
+  console.log(`  → Menghubungkan ke Google Sheets API...`);
+  const auth = new google.auth.GoogleAuth({
+    keyFile: CREDENTIALS_PATH,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+
+  const authClient = await auth.getClient();
+  const sheets = google.sheets({ version: "v4", auth: authClient });
+
+  // 1. Pastikan tab "Responden" sudah ada. Jika belum, kita buat tab baru!
+  console.log(`  → Mengecek daftar tab pada spreadsheet...`);
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const sheetTitle = range.split("!")[0]; // "Responden"
+  const sheetExists = meta.data.sheets.some((s) => s.properties.title === sheetTitle);
+
+  if (!sheetExists) {
+    console.log(`  → Membuat tab baru dengan nama "${sheetTitle}"...`);
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: sheetTitle,
+              },
+            },
+          },
+        ],
+      },
+    });
+  }
+
+  const headers = [
+    "No",
+    "Kabupaten/Kota",
+    "Kecamatan",
+    "Desa/Kelurahan",
+    "SLS/RT (Level 6)",
+    "ID Assignment",
+    "Kode Identitas",
+    "Nama Responden/Usaha",
+    "Alamat",
+    "Jenis Usaha",
+    "Status Penemuan (data9)",
+    "Status Alur Kerja",
+    "Nama Petugas",
+    "Email Petugas",
+    "Latitude",
+    "Longitude"
+  ];
+
+  // 3. Map data ke 2D array (baris)
+  const rows = data.map((item, idx) => {
+    return [
+      idx + 1,
+      item.region?.level1?.level2?.name || "-",
+      item.region?.level1?.level2?.level3?.name || "-",
+      item.region?.level1?.level2?.level3?.level4?.name || "-",
+      item.region?.level1?.level2?.level3?.level4?.level5?.level6?.name || item.region?.level1?.level2?.level3?.level4?.level5?.name || "-",
+      item.id || "-",
+      item.codeIdentity || "-",
+      item.data1 || "-",
+      item.data2 || "-",
+      item.data6 || "-",
+      item.data9 || "Belum diisi",
+      item.assignmentStatusAlias || "-",
+      item.currentUserFullname || "-",
+      item.currentUserUsername || "-",
+      item.latitude || "-",
+      item.longitude || "-"
+    ];
+  });
+
+  let retries = 3;
+  let success = false;
+  while (retries > 0 && !success) {
+    try {
+      console.log(`  → Membersihkan lembar kerja ${range}...`);
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId,
+        range,
+      });
+
+      console.log(`  → Mengunggah ${rows.length} baris data responden ke tab "${sheetTitle}"...`);
+      const chunkSize = 10000;
+
+      // 1. Kirim chunk pertama (termasuk headers)
+      const firstChunk = [headers, ...rows.slice(0, chunkSize)];
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${sheetTitle}!A1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: firstChunk },
+      });
+
+      // 2. Kirim chunk berikutnya
+      for (let i = chunkSize; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        const startRow = i + 2;
+        console.log(`    → Mengunggah baris ${startRow} - ${startRow + chunk.length - 1} ke tab "${sheetTitle}"...`);
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${sheetTitle}!A${startRow}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: chunk },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1000)); // Polite delay to avoid rate limit
+      }
+      
+      success = true;
+      console.log(`  ✓ Sinkronisasi Google Sheets Responden berhasil! (${rows.length} baris diperbarui)`);
     } catch (err) {
       retries--;
       console.warn(`  ⚠ Gagal sync Google Sheets: ${err.message}. Sisa retry: ${retries}`);
