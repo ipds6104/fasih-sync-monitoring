@@ -142,6 +142,7 @@ Dari hasil reverse-engineering terhadap endpoint datatable `POST /app/api/analyt
    * `"2. Tidak"` = Responden/Usaha **Tidak Ditemukan**.
    * `null` / kosong = Belum diisi/diproses oleh pencacah.
 2. **Efisiensi ETL**: Informasi status penemuan ini dikembalikan secara langsung dalam payload respons datatable, sehingga tidak perlu memanggil API detail assignment (`get-by-assignment-id`) satu-per-satu. Hal ini memotong waktu sinkronisasi secara signifikan untuk skala data besar (SE2026).
+3. **Analisis Masalah & Arsitektur Lengkap**: Untuk penanganan detail limit memori NodeJS (`Invalid string length`), limitasi paginasi server 1000 records, pencarian region UUID secara rekursif, dan cara penarikan data CAWI/Online (SE26) secara utuh, silakan baca dokumentasi [DATATABLE_MONITORING.md](file:///c:/projects/fasih-sync-monitoring/DATATABLE_MONITORING.md).
 
 ---
 
