@@ -65,6 +65,10 @@ const KABUPATEN_CODES = (process.env.KABUPATEN_CODES || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const DATATABLE_KABUPATEN_CODES = (process.env.DATATABLE_KABUPATEN_CODES || process.env.KABUPATEN_CODES || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const OUTPUT = resolve(
   __dirname,
   "..",
@@ -994,6 +998,25 @@ async function cmdCrawl() {
         console.log(`  ✓ Semua petugas dari run sebelumnya lengkap di run baru.`);
       }
     }
+
+    ensureDir(OUTPUT_XLSX);
+    writeFileSync(OUTPUT, JSON.stringify(finalData, null, 2));
+    console.log(`  JSON: ${OUTPUT}`);
+    try {
+      const excelPath = await exportToExcel(finalData, OUTPUT_XLSX);
+      console.log(`  Excel: ${excelPath}`);
+    } catch (err) {
+      console.error(`  ✗ Gagal ekspor Excel (mungkin file sedang dibuka/dikunci): ${err.message}`);
+    }
+
+    if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
+      console.log("\n── Step 3: Syncing to Google Sheets ─────────────────");
+      try {
+        await syncToGoogleSheets(finalData);
+      } catch (err) {
+        console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
+      }
+    }
   }
 }
 
@@ -1130,13 +1153,13 @@ async function cmdCrawlDatatable() {
   const filteredRegions = regionTree.filter(region => {
     if (region.fullCode && region.fullCode.length >= 4) {
       const kabCode = region.fullCode.substring(2, 4);
-      return KABUPATEN_CODES.length === 0 || KABUPATEN_CODES.includes(kabCode);
+      return DATATABLE_KABUPATEN_CODES.length === 0 || DATATABLE_KABUPATEN_CODES.includes(kabCode);
     }
     return false;
   }).sort((a, b) => a.fullCode.localeCompare(b.fullCode));
 
   if (filteredRegions.length === 0) {
-    console.warn("  ⚠ Tidak menemukan wilayah (Sub-SLS) yang cocok dengan filter KABUPATEN_CODES.");
+    console.warn("  ⚠ Tidak menemukan wilayah (Sub-SLS) yang cocok dengan filter DATATABLE_KABUPATEN_CODES.");
     return;
   }
 

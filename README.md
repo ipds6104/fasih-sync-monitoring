@@ -56,7 +56,8 @@ DELAY_MS=1000
 MAX_RETRIES=3
 
 # ── KONFIGURASI REGIONAL ──
-KABUPATEN_CODES=                                           # Kosongkan untuk semua kab/kota di Kalbar
+KABUPATEN_CODES=                                           # Kosongkan untuk semua kab/kota di Kalbar (seluruh progres SLS)
+DATATABLE_KABUPATEN_CODES=04                               # Khusus filter datatable responden (misal: 04 untuk Mempawah saja)
 
 # ── LEVEL AGREGASI PROGRES ──
 REGION_SUMMARY_LEVEL=6                                     # 5 = Per SLS (14-digit), 6 = Per Sub-SLS (16-digit)
@@ -101,6 +102,13 @@ Aplikasi ini mendukung penjadwalan otomatis yang bekerja secara cross-platform m
   # Jalankan scheduler di background
   npx pm2 start src/scheduler.js --name "fasih-sync-scheduler"
   ```
+* **Autostart saat Windows Boot (Antisipasi Mati Lampu/PC Restart):**
+  Agar scheduler otomatis berjalan kembali saat komputer menyala, daftarkan project ke startup folder Windows dengan perintah:
+  ```bash
+  npm run install-startup
+  ```
+  *(Script ini secara dinamis mendeteksi lokasi folder kloningan Anda dan memasang file batch di folder Startup Windows).*
+
 * **Melihat Status Scheduler:**
   ```bash
   npx pm2 status

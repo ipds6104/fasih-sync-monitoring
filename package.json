@@ -8,7 +8,8 @@
     "login": "node src/index.js login",
     "crawl": "node src/index.js crawl",
     "crawl-datatable": "node src/index.js crawl-datatable",
-    "import-cookies": "node src/import-cookies.js"
+    "import-cookies": "node src/import-cookies.js",
+    "install-startup": "node src/install-startup.js"
   },
   "keywords": [],
   "author": "",
