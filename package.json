@@ -8,6 +8,7 @@
     "login": "node src/index.js login",
     "crawl": "node src/index.js crawl",
     "crawl-datatable": "node src/index.js crawl-datatable",
+    "sync-gdrive": "node src/index.js sync-gdrive",
     "import-cookies": "node src/import-cookies.js",
     "install-startup": "node src/install-startup.js"
   },

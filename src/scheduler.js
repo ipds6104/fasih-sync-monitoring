@@ -144,15 +144,20 @@ cron.schedule(CRON_SCHEDULE, async () => {
   logMsg(`[Scheduler] ── Mulai job terjadwal ──`);
 
   try {
-    // Tahap 1: Tarik progress pencacah per SLS
-    await runCommand("crawl");
-
-    // Tahap 2: Tarik datatable responden (dijalankan setelah crawl selesai jika diaktifkan)
-    if (process.env.CRAWL_DATATABLE_AFTER_PROGRESS === "true") {
-      logMsg(`[Scheduler] ── Progress selesai. Melanjutkan ke datatable crawl... ──`);
-      await runCommand("crawl-datatable");
+    if (process.env.SYNC_FROM_GDRIVE === "true") {
+      logMsg(`[Scheduler] ── Mode GDrive active: Menarik & menggabungkan file Excel dari GDrive... ──`);
+      await runCommand("sync-gdrive");
     } else {
-      logMsg(`[Scheduler] ── Progress selesai. Datatable crawl dinonaktifkan (CRAWL_DATATABLE_AFTER_PROGRESS != true) ──`);
+      // Tahap 1: Tarik progress pencacah per SLS via direct crawl
+      await runCommand("crawl");
+
+      // Tahap 2: Tarik datatable responden (dijalankan setelah crawl selesai jika diaktifkan)
+      if (process.env.CRAWL_DATATABLE_AFTER_PROGRESS === "true") {
+        logMsg(`[Scheduler] ── Progress selesai. Melanjutkan ke datatable crawl... ──`);
+        await runCommand("crawl-datatable");
+      } else {
+        logMsg(`[Scheduler] ── Progress selesai. Datatable crawl dinonaktifkan (CRAWL_DATATABLE_AFTER_PROGRESS != true) ──`);
+      }
     }
 
     logMsg(`[Scheduler] ── Semua job selesai ──`);

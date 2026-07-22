@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from "fs";
 import ExcelJS from "exceljs";
 import { syncToGoogleSheets, syncDatatableToGoogleSheets } from "./sync-sheets.js";
+import { syncFromGDrive } from "./sync-from-gdrive.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -1310,9 +1311,11 @@ if (cmd === "login") {
   cmdCrawl().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "crawl-datatable") {
   cmdCrawlDatatable().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-gdrive") {
+  syncFromGDrive().catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl|crawl-datatable]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive]");
   process.exit(1);
 }
 
