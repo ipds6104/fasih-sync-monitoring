@@ -9,6 +9,8 @@
     "crawl": "node src/index.js crawl",
     "crawl-datatable": "node src/index.js crawl-datatable",
     "sync-gdrive": "node src/index.js sync-gdrive",
+    "sync-sqllab": "node src/sync-progress-sqllab.js",
+    "query": "node src/execute-query.js",
     "import-cookies": "node src/import-cookies.js",
     "install-startup": "node src/install-startup.js"
   },
