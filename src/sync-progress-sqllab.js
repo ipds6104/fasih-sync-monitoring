@@ -121,45 +121,69 @@ async function runSingleQuery(sql, cookieStr, csrfToken) {
 }
 
 async function fetchMempawahProgressData(cookieStr, csrfToken) {
-  console.log("⚡ Menjalankan Query Paralel Rekap SLS Mempawah di SQL Lab...");
+  console.log("⚡ Menjalankan Query Paralel Rekap SLS (Idempotent & Deterministic ORDER BY)...");
   const startMs = Date.now();
-  const whereClause = `WHERE level_2_full_code = '61${KAB_CODE.padStart(2, '0')}'`;
+  const whereClause = `WHERE level_2_full_code = '61${KAB_CODE.padStart(2, '0')}' AND level_6_full_code IS NOT NULL`;
 
-  const offsets = [0, 1000];
-  const chunks = await Promise.all(
-    offsets.map(offset => {
-      const sql = `
-        SELECT 
-          level_2_name AS kab_kota,
-          level_6_full_code AS kode_sub_sls,
-          COALESCE(current_user_username, '-') AS username_petugas,
-          COALESCE(current_user_username, '-') AS email_petugas,
-          COALESCE(current_user_survey_role_name, 'Pencacah') AS role,
-          COUNT(assignment_id) AS total_target,
-          COUNT(CASE WHEN assignment_status_alias = 'DRAFT' THEN 1 END) AS draft,
-          COUNT(CASE WHEN assignment_status_alias = 'OPEN' THEN 1 END) AS open,
-          COUNT(CASE WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 1 END) AS submitted_respondent,
-          COUNT(CASE WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 1 END) AS submitted_pencacah,
-          COUNT(CASE WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 1 END) AS approved_pengawas,
-          COUNT(CASE WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 1 END) AS rejected_pengawas,
-          COUNT(CASE WHEN assignment_status_alias = 'REVOKED BY Pengawas' THEN 1 END) AS revoked_pengawas,
-          COUNT(CASE WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 1 END) AS completed_admin,
-          COUNT(CASE WHEN assignment_status_alias = 'EDITED BY Admin Kabupaten' THEN 1 END) AS edited_admin,
-          COUNT(CASE WHEN assignment_status_alias = 'EDITED BY Pengawas' THEN 1 END) AS edited_pengawas,
-          COUNT(CASE WHEN assignment_status_alias = 'REJECTED BY Admin Kabupaten' THEN 1 END) AS rejected_admin,
-          COUNT(CASE WHEN assignment_status_alias = 'REVOKED BY Admin Kabupaten' THEN 1 END) AS revoked_admin
-        FROM base_table_assignment
-        ${whereClause}
-        GROUP BY level_2_name, level_6_full_code, current_user_username, current_user_survey_role_name
-        ORDER BY level_6_full_code
-        LIMIT 1000 OFFSET ${offset};
-      `;
-      return runSingleQuery(sql, cookieStr, csrfToken);
-    })
-  );
+  // Dynamic chunk fetching to ensure all rows are captured deterministically
+  let allRows = [];
+  let offset = 0;
+  const chunkSize = 1000;
+  let hasMore = true;
 
-  const allRows = chunks.flat();
-  console.log(`✅ Berhasil menarik ${allRows.length} baris data progres SLS Mempawah dalam ${Date.now() - startMs} ms!`);
+  while (hasMore) {
+    // Run up to 3 chunk requests concurrently
+    const currentOffsets = [offset, offset + chunkSize, offset + (chunkSize * 2)];
+    const chunks = await Promise.all(
+      currentOffsets.map(off => {
+        const sql = `
+          SELECT 
+            level_2_name AS kab_kota,
+            level_6_full_code AS kode_sub_sls,
+            COALESCE(current_user_username, '-') AS username_petugas,
+            COALESCE(current_user_username, '-') AS email_petugas,
+            COALESCE(current_user_survey_role_name, 'Pencacah') AS role,
+            COUNT(assignment_id) AS total_target,
+            COUNT(CASE WHEN assignment_status_alias = 'DRAFT' THEN 1 END) AS draft,
+            COUNT(CASE WHEN assignment_status_alias = 'OPEN' THEN 1 END) AS open,
+            COUNT(CASE WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 1 END) AS submitted_respondent,
+            COUNT(CASE WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 1 END) AS submitted_pencacah,
+            COUNT(CASE WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 1 END) AS approved_pengawas,
+            COUNT(CASE WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 1 END) AS rejected_pengawas,
+            COUNT(CASE WHEN assignment_status_alias = 'REVOKED BY Pengawas' THEN 1 END) AS revoked_pengawas,
+            COUNT(CASE WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 1 END) AS completed_admin,
+            COUNT(CASE WHEN assignment_status_alias = 'EDITED BY Admin Kabupaten' THEN 1 END) AS edited_admin,
+            COUNT(CASE WHEN assignment_status_alias = 'EDITED BY Pengawas' THEN 1 END) AS edited_pengawas,
+            COUNT(CASE WHEN assignment_status_alias = 'REJECTED BY Admin Kabupaten' THEN 1 END) AS rejected_admin,
+            COUNT(CASE WHEN assignment_status_alias = 'REVOKED BY Admin Kabupaten' THEN 1 END) AS revoked_admin
+          FROM base_table_assignment
+          ${whereClause}
+          GROUP BY level_2_name, level_6_full_code, current_user_username, current_user_survey_role_name
+          ORDER BY level_6_full_code ASC, current_user_username ASC, current_user_survey_role_name ASC
+          LIMIT ${chunkSize} OFFSET ${off};
+        `;
+        return runSingleQuery(sql, cookieStr, csrfToken);
+      })
+    );
+
+    let batchCount = 0;
+    for (const chunk of chunks) {
+      allRows.push(...chunk);
+      batchCount += chunk.length;
+      if (chunk.length < chunkSize) {
+        hasMore = false;
+        break;
+      }
+    }
+
+    if (batchCount === 0) {
+      hasMore = false;
+    } else {
+      offset += chunkSize * 3;
+    }
+  }
+
+  console.log(`✅ Berhasil menarik total ${allRows.length} baris progres kombinasi (Sub-SLS + Petugas + Role) dalam ${Date.now() - startMs} ms!`);
   return allRows;
 }
 
@@ -175,7 +199,7 @@ export async function syncProgressFromSqlLab() {
   const authClient = await auth.getClient();
   const sheets = google.sheets({ version: "v4", auth: authClient });
 
-  // 1. Ambil data eksisting dari Google Sheet untuk preservasi 13 Kab/Kota lain
+  // 1. Ambil data eksisting dari Google Sheet
   console.log("→ Membaca data eksisting dari Google Sheet Tab '6100'...");
   const sheetRes = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
@@ -189,22 +213,22 @@ export async function syncProgressFromSqlLab() {
   const headers = allExisting.length > 0 ? allExisting[0] : defaultHeaders;
   const existingRows = allExisting.slice(1);
 
-  // Pisahkan baris non-Mempawah (dipertahankan 100%) dan baris Mempawah (akan diperbarui)
+  // Filter out Mempawah rows to preserve 13 other Kab/Kota intact
   const nonMempawahRows = existingRows.filter(r => r[1] !== "MEMPAWAH");
-  console.log(`📌 Data Non-Mempawah yang dipertahankan utuh: ${nonMempawahRows.length} baris`);
+  console.log(`📌 Data Non-Mempawah yang dipertahankan 100% utuh: ${nonMempawahRows.length} baris`);
 
-  // 2. Tarik data baru Mempawah dari SQL Lab
+  // 2. Tarik data baru Mempawah dari SQL Lab (Deterministic Query)
   const { cookieStr, csrfToken } = await getAuthTokens();
   const freshMempawahRaw = await fetchMempawahProgressData(cookieStr, csrfToken);
 
   if (freshMempawahRaw.length === 0) {
-    console.warn("⚠️ Tidak ada data progres Mempawah yang ditarik dari SQL Lab. Operasi dibatalkan untuk keamanan.");
+    console.warn("⚠️ Tidak ada data progres Mempawah yang ditarik dari SQL Lab. Operasi dibatalkan demi keamanan.");
     return;
   }
 
   // Format data baru Mempawah ke bentuk 2D Array
   const freshMempawahFormatted = freshMempawahRaw.map(item => [
-    "", // 'No' akan di-reindex nanti
+    "", // 'No' akan di-reindex secara deterministik
     item.kab_kota || "MEMPAWAH",
     "'" + item.kode_sub_sls,
     item.username_petugas || "-",
@@ -225,7 +249,7 @@ export async function syncProgressFromSqlLab() {
     item.revoked_admin || 0,
   ]);
 
-  // 3. Penggabungan Selektif (Selective Merge)
+  // 3. Selective Merge & Re-index Idempoten
   const mergedBodyRows = [...nonMempawahRows, ...freshMempawahFormatted];
 
   // Re-index kolom 'No' (Kolom 0)
@@ -238,14 +262,13 @@ export async function syncProgressFromSqlLab() {
   console.log(`   - Data Baru Mempawah (diperbarui via SQL Lab): ${freshMempawahFormatted.length} baris`);
   console.log(`   - Total Baris yang Akan Diunggah: ${mergedBodyRows.length} baris`);
 
-  // 4. Unggah data hasil merge secara aman
+  // 4. Unggah data hasil merge secara deterministik
   const range = "6100!A1";
   console.log(`\n→ Membersihkan lembar kerja ${range}...`);
   await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range });
 
   console.log(`→ Mengunggah ${mergedBodyRows.length} baris data ke Tab "6100"...`);
 
-  // Kirim dalam chunk bertahap untuk keandalan API
   const chunkSize = 10000;
   const totalUpload = [headers, ...mergedBodyRows];
 
@@ -261,7 +284,7 @@ export async function syncProgressFromSqlLab() {
     });
   }
 
-  console.log(`🎉 SINKRONISASI SELESAI! Total ${mergedBodyRows.length} baris (13 Kab/Kota intact + ${freshMempawahFormatted.length} baris Mempawah ter-update) berhasil disimpan di Google Sheets Tab "6100"!`);
+  console.log(`🎉 SINKRONISASI DETERMINISTIK & IDEMPOTEN SELESAI! Total ${mergedBodyRows.length} baris berhasil diperbarui di Google Sheets Tab "6100"!`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
