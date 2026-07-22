@@ -150,7 +150,36 @@ Dari hasil reverse-engineering terhadap endpoint datatable `POST /app/api/analyt
    * `"2. Tidak"` = Responden/Usaha **Tidak Ditemukan**.
    * `null` / kosong = Belum diisi/diproses oleh pencacah.
 2. **Efisiensi ETL**: Informasi status penemuan ini dikembalikan secara langsung dalam payload respons datatable, sehingga tidak perlu memanggil API detail assignment (`get-by-assignment-id`) satu-per-satu. Hal ini memotong waktu sinkronisasi secara signifikan untuk skala data besar (SE2026).
-3. **Analisis Masalah & Arsitektur Lengkap**: Untuk penanganan detail limit memori NodeJS (`Invalid string length`), limitasi paginasi server 1000 records, pencarian region UUID secara rekursif, dan cara penarikan data CAWI/Online (SE26) secara utuh, silakan baca dokumentasi [DATATABLE_MONITORING.md](file:///c:/projects/fasih-sync-monitoring/DATATABLE_MONITORING.md).
+3. **Analisis Masalah & Arsitektur Lengkap**: Untuk penanganan detail limit memori NodeJS (`Invalid string length`), limitasi paginasi server 1000 records, pencarian region UUID secara rekursif, dan cara penarikan data CAWI/Online (SE26) secara utuh, silakan baca dokumentasi [DATATABLE_MONITORING.md](file:///home/ihza/Projects/fasih-sync-monitoring/DATATABLE_MONITORING.md).
+
+---
+
+## ── Dokumentasi Lengkap Proyek ──────────────────────────────────────────
+
+Proyek ini dilengkapi dengan dokumentasi terperinci untuk setiap komponen sistem:
+
+* 📄 **[README.md](file:///home/ihza/Projects/fasih-sync-monitoring/README.md)**  
+  Dokumentasi utama dan panduan setup project.
+* 📄 **[DATATABLE_MONITORING.md](file:///home/ihza/Projects/fasih-sync-monitoring/DATATABLE_MONITORING.md)**  
+  Arsitektur penarikan data responden (datatable) skala besar (117K+ record) tanpa memory overflow.
+* 📄 **[docs/DATA_DICTIONARY.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/DATA_DICTIONARY.md)**  
+  Kamus data terperinci untuk 12 tabel Superset SE2026 beserta deskripsi label kuesioner & sampel ter-anonimisasi.
+* 📄 **[docs/TEMPLATE_KUESIONER_SE2026.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/TEMPLATE_KUESIONER_SE2026.md)**  
+  Dokumentasi struktur template kuesioner FASIH CAPI/CAWI (773 variabel input) & pemetaan ke database SQL Lab per 17 blok kuesioner.
+* 📄 **[docs/SUPERSET_SQL_CRAWLER.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/SUPERSET_SQL_CRAWLER.md)**  
+  Analisis teknis, riwayat error, dan otomatisasi eksekusi SQL Lab Superset API.
+* 📄 **[schema_dan_kolom.md](file:///home/ihza/Projects/fasih-sync-monitoring/schema_dan_kolom.md)**  
+  Daftar mentah nama kolom dan tipe data tabel `se2026_nested`.
+* 📄 **[gemini.md](file:///home/ihza/Projects/fasih-sync-monitoring/gemini.md)**  
+  Agent memory & log perkembangan proyek untuk asistensi AI.
+
+---
+
+## ── Otomatisasi Superset SQL Lab ───────────────────────────────────────────
+
+Untuk penarikan data dan analisis lanjut langsung dari database Superset BPS melalui query SQL secara otomatis, silakan baca dokumentasi [SUPERSET_SQL_CRAWLER.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/SUPERSET_SQL_CRAWLER.md) dan [TEMPLATE_KUESIONER_SE2026.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/TEMPLATE_KUESIONER_SE2026.md).
+
+Kamus data terperinci dan contoh isian setiap tabel database dapat diakses di [DATA_DICTIONARY.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/DATA_DICTIONARY.md).
 
 ---
 

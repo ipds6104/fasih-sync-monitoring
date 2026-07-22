@@ -3,6 +3,7 @@ import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { writeFileSync } from "fs";
+import { platform } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, "..", ".env") });
@@ -19,7 +20,9 @@ async function main() {
   }
 
   console.log("→ Launching stealth browser...");
-  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const chromePath = platform() === "win32"
+    ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    : "/usr/bin/google-chrome-stable";
   const browser = await chromium.launch({
     headless: true,
     executablePath: chromePath,

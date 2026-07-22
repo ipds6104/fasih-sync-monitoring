@@ -43,3 +43,28 @@ const context = await browser.newContext({
 const page = await context.newPage();
 // Proceed to navigate to BPS SSO login page
 ```
+
+---
+
+## BPS Superset / Fasih Dashboard Automation Insights
+When automating SQL execution on `fasih-dashboard.bps.go.id`:
+
+1. **DNS Resolution Bypass on Linux with VPN:**
+   Chromium headless does not respect `/etc/resolv.conf` rewritten by FortiClient VPN. You MUST resolve `fasih-dashboard.bps.go.id` and `sso.bps.go.id` natively via Node's `dns.promises.resolve4()` and map them using:
+   `--host-resolver-rules="MAP fasih-dashboard.bps.go.id <dashboard_ip>, MAP sso.bps.go.id <sso_ip>"`
+
+2. **CSRF Token Extraction:**
+   Every POST request to `/api/v1/sqllab/execute/` requires the `x-csrftoken` header. Load `/superset/sqllab/` and fetch the value of the hidden input `#csrf_token`:
+   ```javascript
+   const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
+   ```
+
+3. **Unique `client_id` Constraint:**
+   Superset requires a unique random 10-char alphanumeric string for `client_id` in the execution payload. Hardcoded client IDs will cause database insertion errors (`HTTP 500: Create failed`). Generate a fresh ID for every execution:
+   ```javascript
+   const clientId = Math.random().toString(36).substring(2, 12);
+   ```
+
+4. **Native Node.js Fetch execution:**
+   Avoid running `fetch` inside page context/browser evaluation to execute database queries as it may fail due to sandboxing or SSL validation. Extract cookies and the CSRF token via Playwright, close the browser, and execute the POST request natively in Node.js with `process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"`.
+

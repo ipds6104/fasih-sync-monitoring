@@ -3,6 +3,8 @@ import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from "fs";
+import { platform } from "os";
+import dns from "dns";
 import ExcelJS from "exceljs";
 import { syncToGoogleSheets, syncDatatableToGoogleSheets } from "./sync-sheets.js";
 import { syncFromGDrive } from "./sync-from-gdrive.js";
@@ -82,6 +84,8 @@ const KC_USERNAME = "#username";
 const KC_PASSWORD = "#password";
 const KC_SUBMIT = "#kc-login";
 const SUCCESS_SELECTORS = [
+  "#fasih",
+  "img[alt='Fasih Logo']",
   "app-root .dropdown-user",
   "app-root .user-name",
   "form[action='/logout']",
@@ -128,6 +132,27 @@ const cleanupOldBackups = (backupDir, maxKeep = 30) => {
   }
 };
 
+// ── local DNS helper to bypass systemd-resolved bypass issues on Linux ──────────────────────────────
+async function getChromeArgs() {
+  const args = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--window-size=1280,800",
+  ];
+  try {
+    const ips = await dns.promises.resolve4("fasih-sm.bps.go.id");
+    if (ips && ips.length > 0) {
+      args.push(`--host-resolver-rules=MAP fasih-sm.bps.go.id ${ips[0]}`);
+      console.log(`  ✓ DNS resolved locally: mapping fasih-sm.bps.go.id to ${ips[0]} in Chrome`);
+    }
+  } catch (err) {
+    console.warn(`  ⚠️ Gagal resolusi DNS lokal untuk fasih-sm.bps.go.id: ${err.message}`);
+  }
+  return args;
+}
+
 // ── login via Playwright (with Patchright & Chrome path to bypass F5 WAF) ───────────────────────────
 async function login({ verbose = false } = {}) {
   if (!USERNAME || !PASSWORD) {
@@ -136,18 +161,16 @@ async function login({ verbose = false } = {}) {
   }
 
   console.log(`→ Login sebagai ${USERNAME} via Playwright (Stealth headless/headful) ...`);
-  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const chromePath =
+    platform() === "win32"
+      ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      : "/usr/bin/google-chrome-stable";
 
+  const args = await getChromeArgs();
   const browser = await chromium.launch({
     headless: HEADLESS,
     executablePath: chromePath,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-infobars",
-      "--window-size=1280,800",
-    ],
+    args,
   });
 
   const context = await browser.newContext({
@@ -226,17 +249,15 @@ async function refreshSession() {
     return login();
   }
   console.log(`  → Refresh session via Playwright ...`);
-  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const chromePath =
+    platform() === "win32"
+      ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      : "/usr/bin/google-chrome-stable";
+  const args = await getChromeArgs();
   const browser = await chromium.launch({
     headless: true,
     executablePath: chromePath,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-infobars",
-      "--window-size=1280,800",
-    ],
+    args,
   });
   const context = await browser.newContext({
     storageState: STORAGE_PATH,
@@ -274,17 +295,15 @@ async function refreshSession() {
 
 // ── launch stealth browser helper for persistent datatable crawl ───────────
 async function launchStealthBrowser() {
-  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const chromePath =
+    platform() === "win32"
+      ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      : "/usr/bin/google-chrome-stable";
+  const args = await getChromeArgs();
   const browser = await chromium.launch({
     headless: HEADLESS,
     executablePath: chromePath,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-infobars",
-      "--window-size=1280,800",
-    ],
+    args,
   });
 
   const context = await browser.newContext({
