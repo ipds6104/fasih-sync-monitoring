@@ -16,6 +16,8 @@ const OUTPUT_JSON = resolve(__dirname, "..", "results", "progress-pencacah.json"
 const OUTPUT_XLSX = resolve(__dirname, "..", "results", "progress-pencacah.xlsx");
 const BACKUP_DIR = resolve(__dirname, "..", "backups");
 
+const STATE_FILE = resolve(__dirname, "..", "results", "gdrive-sync-state.json");
+
 function cleanupOldBackups(backupDir, maxBackups = 30) {
   try {
     const files = fs.readdirSync(backupDir)
@@ -36,7 +38,8 @@ function cleanupOldBackups(backupDir, maxBackups = 30) {
 /**
  * Main function to sync latest Excel files from GDrive
  */
-export async function syncFromGDrive() {
+export async function syncFromGDrive({ force = false } = {}) {
+  const isForce = force || process.argv.includes("--force") || process.argv.includes("-f");
   console.log("── Sync from Google Drive Shared Folder ──────────────────");
   console.log(`  Folder ID: ${GDRIVE_FOLDER_ID}`);
 
@@ -55,7 +58,7 @@ export async function syncFromGDrive() {
 
   const drive = google.drive({ version: "v3", auth });
 
-  console.log("  → Memeriksa daftar file di Google Drive folder...");
+  console.log("  → [Smart Check] Memeriksa daftar file di Google Drive folder...");
   let allFiles = [];
   let pageToken = null;
 
@@ -83,6 +86,19 @@ export async function syncFromGDrive() {
   // 1. Cari file dengan modifiedTime paling terbaru
   const latestFile = allFiles[0];
   const latestTime = new Date(latestFile.modifiedTime).getTime();
+
+  // Smart Check: Cek apakah file batch terbaru ini sudah pernah kita proses sebelumnya
+  if (!isForce && existsSync(STATE_FILE)) {
+    try {
+      const state = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
+      if (state.lastProcessedTimestamp === latestFile.modifiedTime) {
+        console.log(`  ✓ [Smart Check] Data di Google Drive belum ada perubahan baru sejak ${latestFile.modifiedTime}.`);
+        console.log(`    Proses di-skip (hemat resource). Gunakan '--force' jika ingin memproses ulang.\n`);
+        return;
+      }
+    } catch (err) {}
+  }
+
   const BATCH_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 jam window untuk batch file terpisah
 
   // Filter file yang berada dalam window timestamp batch terbaru
@@ -91,7 +107,7 @@ export async function syncFromGDrive() {
     return Math.abs(latestTime - fileTime) <= BATCH_WINDOW_MS;
   });
 
-  console.log(`  ✓ Ditemukan ${batchFiles.length} file dalam batch terbaru (Timestamp: ${latestFile.modifiedTime}):`);
+  console.log(`  ✓ Ditemukan file baru! Batch terbaru (${latestFile.modifiedTime}) berisi ${batchFiles.length} file:`);
   for (const f of batchFiles) {
     console.log(`    - ${f.name} (ID: ${f.id})`);
   }
@@ -300,4 +316,21 @@ export async function syncFromGDrive() {
       console.error(`  ✗ Gagal sync Google Sheets: ${err.message}`);
     }
   }
+
+  // 6. Update Smart Check State File
+  try {
+    writeFileSync(
+      STATE_FILE,
+      JSON.stringify(
+        {
+          lastProcessedTimestamp: latestFile.modifiedTime,
+          lastProcessedFiles: batchFiles.map((f) => f.name),
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2
+      )
+    );
+    console.log(`  ✓ [Smart Check] State diperbarui (${latestFile.modifiedTime})\n`);
+  } catch (err) {}
 }
