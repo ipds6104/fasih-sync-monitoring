@@ -18,7 +18,7 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1Jg5DwJUWu0Q-LmHXFabRBDbcx
 const BASE_URL = "https://fasih-dashboard.bps.go.id";
 const USERNAME = process.env.FASIH_USERNAME;
 const PASSWORD = process.env.FASIH_PASSWORD;
-const KAB_CODE = process.env.DATATABLE_KABUPATEN_CODES || "04";
+const KAB_CODE = process.env.DATATABLE_KABUPATEN_CODES || "04"; // Default '04' untuk Mempawah
 
 const FIXED_STATUSES = [
   "DRAFT",
@@ -120,10 +120,10 @@ async function runSingleQuery(sql, cookieStr, csrfToken) {
   return json.data || [];
 }
 
-async function fetchAllProgressData(cookieStr, csrfToken) {
-  console.log("⚡ Menjalankan Query Paralel Rekap SLS di SQL Lab (chunk limit 1000)...");
+async function fetchMempawahProgressData(cookieStr, csrfToken) {
+  console.log("⚡ Menjalankan Query Paralel Rekap SLS Mempawah di SQL Lab...");
   const startMs = Date.now();
-  const whereClause = KAB_CODE ? `WHERE level_2_full_code = '61${KAB_CODE.padStart(2, '0')}'` : "WHERE level_2_full_code LIKE '61%'";
+  const whereClause = `WHERE level_2_full_code = '61${KAB_CODE.padStart(2, '0')}'`;
 
   const offsets = [0, 1000];
   const chunks = await Promise.all(
@@ -159,29 +159,52 @@ async function fetchAllProgressData(cookieStr, csrfToken) {
   );
 
   const allRows = chunks.flat();
-  console.log(`✅ Berhasil menarik ${allRows.length} baris data progres SLS dalam ${Date.now() - startMs} ms!`);
+  console.log(`✅ Berhasil menarik ${allRows.length} baris data progres SLS Mempawah dalam ${Date.now() - startMs} ms!`);
   return allRows;
 }
 
 export async function syncProgressFromSqlLab() {
-  console.log("=== SINKRONISASI PROGRESS PER SLS VIA SQL LAB TO GOOGLE SHEETS ===");
-  const { cookieStr, csrfToken } = await getAuthTokens();
-  const rawRows = await fetchAllProgressData(cookieStr, csrfToken);
+  console.log("=== SINKRONISASI SELECTIVE MERGE PROGRESS PER SLS TO GOOGLE SHEETS ===");
 
-  if (rawRows.length === 0) {
-    console.warn("⚠️ Tidak ada data progres yang ditarik.");
-    return;
-  }
+  console.log(`→ Menghubungkan ke Google Sheets API (${SPREADSHEET_ID})...`);
+  const auth = new google.auth.GoogleAuth({
+    keyFile: CREDENTIALS_PATH,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
 
-  // Format headers matching Tab "6100"
-  const headers = [
+  const authClient = await auth.getClient();
+  const sheets = google.sheets({ version: "v4", auth: authClient });
+
+  // 1. Ambil data eksisting dari Google Sheet untuk preservasi 13 Kab/Kota lain
+  console.log("→ Membaca data eksisting dari Google Sheet Tab '6100'...");
+  const sheetRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "'6100'!A1:Z50000",
+  });
+  const allExisting = sheetRes.data.values || [];
+  const defaultHeaders = [
     "No", "Kab/Kota", "Kode Wilayah (Sub-SLS)", "Username Petugas", "Email Petugas", "Role",
     "Total Target", ...FIXED_STATUSES
   ];
+  const headers = allExisting.length > 0 ? allExisting[0] : defaultHeaders;
+  const existingRows = allExisting.slice(1);
 
-  // Map to 2D Array
-  const formattedRows = rawRows.map((item, idx) => [
-    idx + 1,
+  // Pisahkan baris non-Mempawah (dipertahankan 100%) dan baris Mempawah (akan diperbarui)
+  const nonMempawahRows = existingRows.filter(r => r[1] !== "MEMPAWAH");
+  console.log(`📌 Data Non-Mempawah yang dipertahankan utuh: ${nonMempawahRows.length} baris`);
+
+  // 2. Tarik data baru Mempawah dari SQL Lab
+  const { cookieStr, csrfToken } = await getAuthTokens();
+  const freshMempawahRaw = await fetchMempawahProgressData(cookieStr, csrfToken);
+
+  if (freshMempawahRaw.length === 0) {
+    console.warn("⚠️ Tidak ada data progres Mempawah yang ditarik dari SQL Lab. Operasi dibatalkan untuk keamanan.");
+    return;
+  }
+
+  // Format data baru Mempawah ke bentuk 2D Array
+  const freshMempawahFormatted = freshMempawahRaw.map(item => [
+    "", // 'No' akan di-reindex nanti
     item.kab_kota || "MEMPAWAH",
     "'" + item.kode_sub_sls,
     item.username_petugas || "-",
@@ -202,28 +225,43 @@ export async function syncProgressFromSqlLab() {
     item.revoked_admin || 0,
   ]);
 
-  console.log(`→ Menghubungkan ke Google Sheets API (${SPREADSHEET_ID})...`);
-  const auth = new google.auth.GoogleAuth({
-    keyFile: CREDENTIALS_PATH,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  // 3. Penggabungan Selektif (Selective Merge)
+  const mergedBodyRows = [...nonMempawahRows, ...freshMempawahFormatted];
+
+  // Re-index kolom 'No' (Kolom 0)
+  mergedBodyRows.forEach((row, idx) => {
+    row[0] = idx + 1;
   });
 
-  const authClient = await auth.getClient();
-  const sheets = google.sheets({ version: "v4", auth: authClient });
+  console.log(`\n📊 RINGKASAN HASIL PENGGABUNGAN (SELECTIVE MERGE):`);
+  console.log(`   - Data Non-Mempawah (13 Kab/Kota dipertahankan): ${nonMempawahRows.length} baris`);
+  console.log(`   - Data Baru Mempawah (diperbarui via SQL Lab): ${freshMempawahFormatted.length} baris`);
+  console.log(`   - Total Baris yang Akan Diunggah: ${mergedBodyRows.length} baris`);
 
+  // 4. Unggah data hasil merge secara aman
   const range = "6100!A1";
-  console.log(`→ Membersihkan lembar kerja ${range}...`);
+  console.log(`\n→ Membersihkan lembar kerja ${range}...`);
   await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range });
 
-  console.log(`→ Mengunggah ${formattedRows.length} baris data ke Tab "6100"...`);
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: "6100!A1",
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [headers, ...formattedRows] },
-  });
+  console.log(`→ Mengunggah ${mergedBodyRows.length} baris data ke Tab "6100"...`);
 
-  console.log(`🎉 SINKRONISASI SELESAI! ${formattedRows.length} baris progress per SLS berhasil diperbarui di Google Sheets Tab "6100"!`);
+  // Kirim dalam chunk bertahap untuk keandalan API
+  const chunkSize = 10000;
+  const totalUpload = [headers, ...mergedBodyRows];
+
+  for (let i = 0; i < totalUpload.length; i += chunkSize) {
+    const chunk = totalUpload.slice(i, i + chunkSize);
+    const startRow = i + 1;
+    console.log(`  → Mengunggah chunk baris ${startRow} - ${startRow + chunk.length - 1}...`);
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `6100!A${startRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: chunk },
+    });
+  }
+
+  console.log(`🎉 SINKRONISASI SELESAI! Total ${mergedBodyRows.length} baris (13 Kab/Kota intact + ${freshMempawahFormatted.length} baris Mempawah ter-update) berhasil disimpan di Google Sheets Tab "6100"!`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
