@@ -175,11 +175,28 @@ Proyek ini dilengkapi dengan dokumentasi terperinci untuk setiap komponen sistem
 
 ---
 
-## ── Otomatisasi Superset SQL Lab ───────────────────────────────────────────
+## ── Otomatisasi Superset SQL Lab & Eksekusi Query Paralel ─────────────────────
 
-Untuk penarikan data dan analisis lanjut langsung dari database Superset BPS melalui query SQL secara otomatis, silakan baca dokumentasi [SUPERSET_SQL_CRAWLER.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/SUPERSET_SQL_CRAWLER.md) dan [TEMPLATE_KUESIONER_SE2026.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/TEMPLATE_KUESIONER_SE2026.md).
+Proyek ini menyediakan CLI mandiri dan library untuk mengeksekusi query SQL langsung ke database Fasih Dashboard Superset (`tgr_fd68e454` SE2026) dengan bypass F5 WAF & SSO BPS secara otomatis:
 
-Kamus data terperinci dan contoh isian setiap tabel database dapat diakses di [DATA_DICTIONARY.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/DATA_DICTIONARY.md).
+1. **Eksekusi Query CLI (`src/execute-query.js`)**:
+   ```bash
+   # Eksekusi SQL Query bebas
+   npm run query "SELECT level_2_name, level_6_full_code, COUNT(*) AS total FROM base_table_assignment WHERE level_2_full_code = '6104' GROUP BY level_2_name, level_6_full_code LIMIT 10"
+   ```
+2. **Sinkronisasi Progres SQL Lab (`src/sync-progress-sqllab.js`)**:
+   ```bash
+   # Sinkronisasi rekap progres Sub-SLS via SQL Lab ke Google Sheets
+   npm run sync-sqllab
+   ```
+3. **Mekanisme Paralel & Idempotensi**:
+   - Mendukung eksekusi query paralel concurrent via `Promise.all()` menggunakan `client_id` alfanumerik 10 karakter yang dihasilkan secara unik per request untuk mencegah bentrokan di database Superset.
+   - Penarikan chunking paralel dipastikan **100% idempoten** dengan `ORDER BY` deterministik.
+
+4. **Dokumentasi Terkait**:
+   - **[docs/SUPERSET_SQL_CRAWLER.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/SUPERSET_SQL_CRAWLER.md)** — Panduan otomatisasi & riset API SQL Lab Superset.
+   - **[docs/DATA_DICTIONARY.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/DATA_DICTIONARY.md)** — Kamus data lengkap 12 tabel Superset SE2026 beserta deskripsi label kuesioner.
+   - **[docs/TEMPLATE_KUESIONER_SE2026.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/TEMPLATE_KUESIONER_SE2026.md)** — Dokumentasi 773 variabel template kuesioner CAPI/CAWI & pemetaan per 17 blok kuesioner.
 
 ---
 
