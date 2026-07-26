@@ -8,6 +8,7 @@ import dns from "dns";
 import ExcelJS from "exceljs";
 import { syncToGoogleSheets, syncDatatableToGoogleSheets } from "./sync-sheets.js";
 import { syncFromGDrive } from "./sync-from-gdrive.js";
+import { syncDashboardSE2026 } from "./sync-dashboard-se2026.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -1332,9 +1333,11 @@ if (cmd === "login") {
   cmdCrawlDatatable().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-gdrive") {
   syncFromGDrive().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-se2026") {
+  syncDashboardSE2026().catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026]");
   process.exit(1);
 }
 

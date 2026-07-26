@@ -54,3 +54,4 @@ backups/
 # ── Runtime locks & Scratch files ─────────────────────────────────────────────
 scheduler.lock
 scratch/
+src/test-inspect-*.js

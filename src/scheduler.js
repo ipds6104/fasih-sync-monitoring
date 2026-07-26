@@ -165,3 +165,18 @@ cron.schedule(CRON_SCHEDULE, async () => {
     logMsg(`[Scheduler] ⚠ Job gagal: ${err.message}`);
   }
 });
+
+// ── Cron Job SE2026 (Setiap hari pukul 06:15 WIB) ──────────────────────────
+const CRON_SE2026_SCHEDULE = process.env.CRON_SE2026_SCHEDULE || "15 6 * * *";
+logMsg(`[Scheduler] Registering SE2026 job. Schedule: "${CRON_SE2026_SCHEDULE}"`);
+
+cron.schedule(CRON_SE2026_SCHEDULE, async () => {
+  logMsg(`[Scheduler] ── Mulai job terjadwal SE2026 (06:15 WIB) ──`);
+  try {
+    await runCommand("sync-se2026");
+    logMsg(`[Scheduler] ── Job terjadwal SE2026 selesai ──`);
+  } catch (err) {
+    logMsg(`[Scheduler] ⚠ Job terjadwal SE2026 gagal: ${err.message}`);
+  }
+});
+
