@@ -1337,9 +1337,30 @@ if (cmd === "login") {
   syncFromGDrive().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-se2026") {
   (async () => {
-    await syncDashboardSE2026();
+    let dashboardError = null;
+    let sqllabError = null;
+
+    try {
+      await syncDashboardSE2026();
+    } catch (e) {
+      console.error("✗ syncDashboardSE2026 failed:", e.message);
+      dashboardError = e;
+    }
+
     console.log("\n── Memulai sinkronisasi progres via SQL Lab ─────────────────");
-    await syncProgressFromSqlLab();
+    try {
+      await syncProgressFromSqlLab();
+    } catch (e) {
+      console.error("✗ syncProgressFromSqlLab failed:", e.message);
+      sqllabError = e;
+    }
+
+    if (dashboardError || sqllabError) {
+      const messages = [];
+      if (dashboardError) messages.push(`Dashboard SE2026 Sync: ${dashboardError.message}`);
+      if (sqllabError) messages.push(`SQL Lab Sync: ${sqllabError.message}`);
+      throw new Error(messages.join(" | "));
+    }
   })().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-sqllab") {
   syncProgressFromSqlLab().catch((e) => { console.error(e); process.exit(1); });
