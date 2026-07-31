@@ -16,6 +16,7 @@ const PASSWORD = process.env.FASIH_PASSWORD;
 
 const COOKIES_PATH = resolve(__dirname, "..", "cookies", "fasih-dashboard.json");
 const STORAGE_PATH = COOKIES_PATH.replace(".json", "-storage.json");
+const CSRF_PATH = resolve(__dirname, "..", "cookies", "fasih-csrf.txt");
 
 const ensureDir = (fp) => mkdirSync(dirname(fp), { recursive: true });
 
@@ -69,7 +70,7 @@ async function performLogin() {
   const page = await context.newPage();
   try {
     console.log("→ Menavigasi ke halaman login...");
-    await page.goto(`${BASE_URL}/login/`, { waitUntil: "networkidle", timeout: 45000 });
+    await page.goto(`${BASE_URL}/login/`, { waitUntil: "domcontentloaded", timeout: 45000 });
     
     console.log("→ Mengklik tombol login SSO...");
     await page.click("button:has-text('GO!')");
@@ -84,10 +85,10 @@ async function performLogin() {
     await page.click("#kc-login");
     
     console.log("→ Menunggu kembali ke dashboard...");
-    await page.waitForURL((url) => url.hostname.includes("fasih-dashboard.bps.go.id"), { timeout: 30000 });
+    await page.waitForURL((url) => url.hostname.includes("fasih-dashboard.bps.go.id"), { timeout: 30000, waitUntil: "commit" });
     
     console.log("→ Mendapatkan token CSRF dari halaman SQLLab...");
-    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "networkidle", timeout: 45000 });
+    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 45000 });
     
     const csrfToken = await page.evaluate(() => {
       const el = document.getElementById("csrf_token");
@@ -103,60 +104,74 @@ async function performLogin() {
     writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
     const storageState = await context.storageState();
     writeFileSync(STORAGE_PATH, JSON.stringify(storageState, null, 2));
+    writeFileSync(CSRF_PATH, csrfToken);
 
     console.log("✓ Login berhasil! Cookie dan Token CSRF telah disimpan.");
-    return { cookies, csrfToken };
+    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    return { cookies, cookieStr, csrfToken };
+  } catch (error) {
+    const screenshotPath = resolve(__dirname, "..", "results", "login-failure.png");
+    ensureDir(screenshotPath);
+    await page.screenshot({ path: screenshotPath });
+    console.error(`❌ Exception terdeteksi: ${error.message}`);
+    console.error(`❌ Screenshot saved to: ${screenshotPath}`);
+    throw error;
   } finally {
     await browser.close();
   }
 }
 
-// Retrieve CSRF token from active session
-async function getCsrfTokenFromPage(storagePath) {
+// Load cached session (cookie + CSRF) without opening browser
+function loadCachedSession() {
+  if (!existsSync(COOKIES_PATH) || !existsSync(CSRF_PATH)) return null;
+  try {
+    const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
+    const csrfToken = readFileSync(CSRF_PATH, "utf-8").trim();
+    if (!csrfToken || cookies.length === 0) return null;
+    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    return { cookies, cookieStr, csrfToken };
+  } catch {
+    return null;
+  }
+}
+
+// Launch browser to refresh session and get fresh CSRF token
+async function refreshSessionViaBrowser() {
   const chromePath = platform() === "win32"
     ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     : "/usr/bin/google-chrome-stable";
-
   const args = await getChromeArgs();
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: chromePath,
-    args
-  });
 
-  const context = await browser.newContext({
-    storageState: storagePath,
-    ignoreHTTPSErrors: true,
-    locale: "id-ID",
-    viewport: { width: 1280, height: 800 },
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  });
-
-  const page = await context.newPage();
-  try {
-    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "networkidle", timeout: 30000 });
-    
-    // If redirected to login, the session is expired
-    if (page.url().includes("/login/")) {
-      return null;
-    }
-
-    const csrfToken = await page.evaluate(() => {
-      const el = document.getElementById("csrf_token");
-      return el ? el.value : null;
+  // Try stored session first (fast path)
+  if (existsSync(STORAGE_PATH)) {
+    const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
+    const context = await browser.newContext({
+      storageState: STORAGE_PATH,
+      ignoreHTTPSErrors: true,
+      locale: "id-ID",
+      viewport: { width: 1280, height: 800 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
-
-    const cookies = await context.cookies();
-    writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
-    const storageState = await context.storageState();
-    writeFileSync(STORAGE_PATH, JSON.stringify(storageState, null, 2));
-
-    return csrfToken;
-  } catch (err) {
-    return null;
-  } finally {
-    await browser.close();
+    const page = await context.newPage();
+    try {
+      await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 30000 });
+      if (!page.url().includes("/login/")) {
+        const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
+        if (csrfToken) {
+          const cookies = await context.cookies();
+          const storageState = await context.storageState();
+          writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+          writeFileSync(STORAGE_PATH, JSON.stringify(storageState, null, 2));
+          writeFileSync(CSRF_PATH, csrfToken);
+          const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+          return { cookies, cookieStr, csrfToken };
+        }
+      }
+    } catch {} finally { await browser.close(); }
   }
+
+  // Full SSO login
+  return performLogin();
 }
 
 // Execute query using native fetch
@@ -213,34 +228,17 @@ async function run() {
     process.exit(1);
   }
 
-  let cookies = [];
-  let csrfToken = null;
+  // Fast path: try cached cookie + CSRF token directly (no browser needed)
+  let session = loadCachedSession();
+  let { cookies, cookieStr, csrfToken } = session || { cookies: [], cookieStr: "", csrfToken: null };
 
-  // Check if session files exist
-  if (existsSync(COOKIES_PATH) && existsSync(STORAGE_PATH)) {
-    console.log("→ Memuat sesi tersimpan...");
-    try {
-      cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
-      csrfToken = await getCsrfTokenFromPage(STORAGE_PATH);
-      if (csrfToken) {
-        // Update loaded cookies
-        cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
-      } else {
-        console.warn("⚠️ Sesi tersimpan kadaluwarsa.");
-      }
-    } catch (err) {
-      console.warn("⚠️ Gagal memuat sesi:", err.message);
-    }
+  if (!session) {
+    console.log("→ Tidak ada sesi tersimpan. Melakukan login...");
+    session = await refreshSessionViaBrowser();
+    ({ cookies, cookieStr, csrfToken } = session);
+  } else {
+    console.log("→ Menggunakan sesi tersimpan (tanpa buka browser)...");
   }
-
-  // If no session, perform login
-  if (!csrfToken) {
-    const fresh = await performLogin();
-    cookies = fresh.cookies;
-    csrfToken = fresh.csrfToken;
-  }
-
-  const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
   console.log("→ Mengeksekusi query SQL...");
   let res = await executeQuery(sql, cookieStr, csrfToken);
@@ -257,9 +255,8 @@ async function run() {
 
   if (isUnauthorized || isCsrfMissing) {
     console.warn(`⚠️ Sesi ditolak (Status ${res.status} atau CSRF kedaluwarsa). Melakukan re-login...`);
-    const fresh = await performLogin();
-    const freshCookieStr = fresh.cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    res = await executeQuery(sql, freshCookieStr, fresh.csrfToken);
+    const fresh = await refreshSessionViaBrowser();
+    res = await executeQuery(sql, fresh.cookieStr, fresh.csrfToken);
   }
 
   if (!res.ok) {

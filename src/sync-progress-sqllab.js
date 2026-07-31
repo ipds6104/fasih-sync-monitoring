@@ -18,9 +18,16 @@ const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1Jg5DwJUWu0Q-LmHXFabRBDbcx
 const BASE_URL = "https://fasih-dashboard.bps.go.id";
 const USERNAME = process.env.FASIH_USERNAME;
 const PASSWORD = process.env.FASIH_PASSWORD;
-const KAB_CODE = process.env.DATATABLE_KABUPATEN_CODES || "04"; // Default '04' untuk Mempawah
+const KAB_CODE = process.env.DATATABLE_KABUPATEN_CODES || "04";
 
-const FIXED_STATUSES = [
+const EXACT_HEADERS = [
+  "No",
+  "Kab/Kota",
+  "Kode Wilayah (Sub-SLS)",
+  "Username Petugas",
+  "Email Petugas",
+  "Role",
+  "Total Target",
   "DRAFT",
   "OPEN",
   "SUBMITTED RESPONDENT",
@@ -32,7 +39,7 @@ const FIXED_STATUSES = [
   "EDITED BY Admin Kabupaten",
   "EDITED BY Pengawas",
   "REJECTED BY Admin Kabupaten",
-  "REVOKED BY Admin Kabupaten",
+  "REVOKED BY Admin Kabupaten"
 ];
 
 async function getChromeArgs() {
@@ -50,19 +57,23 @@ async function getChromeArgs() {
 
 async function getAuthTokens() {
   if (existsSync(COOKIES_PATH) && existsSync(STORAGE_PATH)) {
-    const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
-    const chromePath = platform() === "win32" ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" : "/usr/bin/google-chrome-stable";
-    const args = await getChromeArgs();
-    const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
-    const context = await browser.newContext({ storageState: STORAGE_PATH, ignoreHTTPSErrors: true });
-    const page = await context.newPage();
     try {
-      await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "networkidle", timeout: 30000 });
-      if (!page.url().includes("/login/")) {
-        const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
-        if (csrfToken) return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
-      }
-    } catch {} finally { await browser.close(); }
+      const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
+      const chromePath = platform() === "win32" ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" : "/usr/bin/google-chrome-stable";
+      const args = await getChromeArgs();
+      const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
+      const context = await browser.newContext({ storageState: STORAGE_PATH, ignoreHTTPSErrors: true });
+      const page = await context.newPage();
+      try {
+        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 15000 });
+        if (!page.url().includes("/login/")) {
+          const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
+          if (csrfToken) return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
+        }
+      } finally { await browser.close(); }
+    } catch (e) {
+      console.log("-> Saved session check failed, proceeding to full login:", e.message);
+    }
   }
 
   // Full login
@@ -73,15 +84,16 @@ async function getAuthTokens() {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   try {
-    await page.goto(`${BASE_URL}/login/`, { waitUntil: "networkidle", timeout: 45000 });
+    await page.goto(`${BASE_URL}/login/`, { waitUntil: "domcontentloaded", timeout: 20000 });
     await page.click("button:has-text('GO!')");
     await page.waitForURL(url => url.hostname.includes("sso.bps.go.id"));
     await page.fill("#username", USERNAME);
     await page.fill("#password", PASSWORD);
     await page.click("#kc-login");
     await page.waitForURL(url => url.hostname.includes("fasih-dashboard.bps.go.id"));
-    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "networkidle", timeout: 45000 });
+    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 20000 });
     const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
+    if (!csrfToken) throw new Error("Failed to extract CSRF token after login.");
     const cookies = await context.cookies();
     mkdirSync(resolve(__dirname, "..", "cookies"), { recursive: true });
     writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
@@ -105,85 +117,87 @@ async function runSingleQuery(sql, cookieStr, csrfToken) {
     queryLimit: 1000,
     expand_data: true
   };
-  const res = await fetch(`${BASE_URL}/api/v1/sqllab/execute/`, {
-    method: "POST",
-    headers: {
-      "accept": "application/json",
-      "content-type": "application/json",
-      "x-csrftoken": csrfToken,
-      "cookie": cookieStr,
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    },
-    body: JSON.stringify(payload)
-  });
-  const json = await res.json();
-  return json.data || [];
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 300000);
+  try {
+    const res = await fetch(`${BASE_URL}/api/v1/sqllab/execute/`, {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-csrftoken": csrfToken,
+        "cookie": cookieStr,
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    const json = await res.json();
+    if (json.errors) console.error("SQL Lab Error Response:", json.errors);
+    return json.data || [];
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error("Fetch SQL Lab error/timeout:", err.message);
+    return [];
+  }
 }
 
 async function fetchMempawahProgressData(cookieStr, csrfToken) {
-  console.log("⚡ Menjalankan Query Paralel Rekap SLS (Idempotent & Deterministic ORDER BY)...");
+  console.log("⚡ Menjalankan Query Rekap SLS Mempawah (6104) di SQL Lab...");
   const startMs = Date.now();
-  const whereClause = `WHERE level_2_full_code = '61${KAB_CODE.padStart(2, '0')}' AND level_6_full_code IS NOT NULL`;
 
-  // Dynamic chunk fetching to ensure all rows are captured deterministically
+  const sql = `
+    SELECT 
+      bta.level_2_name AS kab_kota,
+      bta.level_6_full_code AS kode_sub_sls,
+      btu.email AS username_petugas,
+      btu.email AS email_petugas,
+      'Pencacah' AS role,
+      COUNT(bta.assignment_id) AS total_target,
+      SUM(bta.assignment_status_alias = 'DRAFT') AS draft,
+      SUM(bta.assignment_status_alias = 'OPEN') AS open_status,
+      SUM(bta.assignment_status_alias = 'SUBMITTED RESPONDENT') AS submitted_respondent,
+      SUM(bta.assignment_status_alias = 'SUBMITTED BY Pencacah') AS submitted_pencacah,
+      SUM(bta.assignment_status_alias = 'APPROVED BY Pengawas') AS approved_pengawas,
+      SUM(bta.assignment_status_alias = 'REJECTED BY Pengawas') AS rejected_pengawas,
+      SUM(bta.assignment_status_alias = 'REVOKED BY Pengawas') AS revoked_pengawas,
+      SUM(bta.assignment_status_alias = 'COMPLETED BY Admin Kabupaten') AS completed_admin,
+      SUM(bta.assignment_status_alias = 'EDITED BY Admin Kabupaten') AS edited_admin,
+      SUM(bta.assignment_status_alias = 'EDITED BY Pengawas') AS edited_pengawas,
+      SUM(bta.assignment_status_alias = 'REJECTED BY Admin Kabupaten') AS rejected_admin,
+      SUM(bta.assignment_status_alias = 'REVOKED BY Admin Kabupaten') AS revoked_admin
+    FROM base_table_assignment AS bta
+    INNER JOIN base_table_assignment_responsibility AS btar
+      ON btar.assignment_id = bta.assignment_id
+      AND btar.current_survey_role_id = '6d7d919a-45e5-4779-bb87-2905b49fd31a'
+    INNER JOIN (SELECT DISTINCT user_id, email FROM base_table_user_allocation_new) AS btu
+      ON btar.current_user_id = btu.user_id
+    WHERE bta.survey_period_id = 'fd68e454-ba45-4b85-8205-f3bf777ded24'
+      AND bta.level_2_full_code = '61${KAB_CODE.padStart(2, '0')}'
+      AND bta.level_6_full_code IS NOT NULL
+    GROUP BY bta.level_2_name, bta.level_6_full_code, btu.email
+    ORDER BY bta.level_6_full_code ASC, btu.email ASC
+  `;
+
   let allRows = [];
   let offset = 0;
-  const chunkSize = 1000;
   let hasMore = true;
 
   while (hasMore) {
-    // Run up to 3 chunk requests concurrently
-    const currentOffsets = [offset, offset + chunkSize, offset + (chunkSize * 2)];
-    const chunks = await Promise.all(
-      currentOffsets.map(off => {
-        const sql = `
-          SELECT 
-            level_2_name AS kab_kota,
-            level_6_full_code AS kode_sub_sls,
-            COALESCE(current_user_username, '-') AS username_petugas,
-            COALESCE(current_user_username, '-') AS email_petugas,
-            COALESCE(current_user_survey_role_name, 'Pencacah') AS role,
-            COUNT(assignment_id) AS total_target,
-            COUNT(CASE WHEN assignment_status_alias = 'DRAFT' THEN 1 END) AS draft,
-            COUNT(CASE WHEN assignment_status_alias = 'OPEN' THEN 1 END) AS open,
-            COUNT(CASE WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 1 END) AS submitted_respondent,
-            COUNT(CASE WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 1 END) AS submitted_pencacah,
-            COUNT(CASE WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 1 END) AS approved_pengawas,
-            COUNT(CASE WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 1 END) AS rejected_pengawas,
-            COUNT(CASE WHEN assignment_status_alias = 'REVOKED BY Pengawas' THEN 1 END) AS revoked_pengawas,
-            COUNT(CASE WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 1 END) AS completed_admin,
-            COUNT(CASE WHEN assignment_status_alias = 'EDITED BY Admin Kabupaten' THEN 1 END) AS edited_admin,
-            COUNT(CASE WHEN assignment_status_alias = 'EDITED BY Pengawas' THEN 1 END) AS edited_pengawas,
-            COUNT(CASE WHEN assignment_status_alias = 'REJECTED BY Admin Kabupaten' THEN 1 END) AS rejected_admin,
-            COUNT(CASE WHEN assignment_status_alias = 'REVOKED BY Admin Kabupaten' THEN 1 END) AS revoked_admin
-          FROM base_table_assignment
-          ${whereClause}
-          GROUP BY level_2_name, level_6_full_code, current_user_username, current_user_survey_role_name
-          ORDER BY level_6_full_code ASC, current_user_username ASC, current_user_survey_role_name ASC
-          LIMIT ${chunkSize} OFFSET ${off};
-        `;
-        return runSingleQuery(sql, cookieStr, csrfToken);
-      })
-    );
-
-    let batchCount = 0;
-    for (const chunk of chunks) {
-      allRows.push(...chunk);
-      batchCount += chunk.length;
-      if (chunk.length < chunkSize) {
-        hasMore = false;
-        break;
-      }
-    }
-
-    if (batchCount === 0) {
+    const cleanSql = sql.trim().replace(/;+$/, '');
+    const chunkSql = `${cleanSql} LIMIT 1000 OFFSET ${offset};`;
+    const rows = await runSingleQuery(chunkSql, cookieStr, csrfToken);
+    console.log(` -> Offset ${offset}: ditarik ${rows.length} baris`);
+    allRows.push(...rows);
+    if (rows.length < 1000) {
       hasMore = false;
     } else {
-      offset += chunkSize * 3;
+      offset += 1000;
     }
   }
 
-  console.log(`✅ Berhasil menarik total ${allRows.length} baris progres kombinasi (Sub-SLS + Petugas + Role) dalam ${Date.now() - startMs} ms!`);
+  console.log(`✅ Berhasil menarik total ${allRows.length} baris progres Mempawah dalam ${Date.now() - startMs} ms!`);
   return allRows;
 }
 
@@ -206,29 +220,24 @@ export async function syncProgressFromSqlLab() {
     range: "'6100'!A1:Z50000",
   });
   const allExisting = sheetRes.data.values || [];
-  const defaultHeaders = [
-    "No", "Kab/Kota", "Kode Wilayah (Sub-SLS)", "Username Petugas", "Email Petugas", "Role",
-    "Total Target", ...FIXED_STATUSES
-  ];
-  const headers = allExisting.length > 0 ? allExisting[0] : defaultHeaders;
   const existingRows = allExisting.slice(1);
 
   // Filter out Mempawah rows to preserve 13 other Kab/Kota intact
   const nonMempawahRows = existingRows.filter(r => r[1] !== "MEMPAWAH");
   console.log(`📌 Data Non-Mempawah yang dipertahankan 100% utuh: ${nonMempawahRows.length} baris`);
 
-  // 2. Tarik data baru Mempawah dari SQL Lab (Deterministic Query)
+  // 2. Tarik data baru Mempawah dari SQL Lab
   const { cookieStr, csrfToken } = await getAuthTokens();
   const freshMempawahRaw = await fetchMempawahProgressData(cookieStr, csrfToken);
 
   if (freshMempawahRaw.length === 0) {
-    console.warn("⚠️ Tidak ada data progres Mempawah yang ditarik dari SQL Lab. Operasi dibatalkan demi keamanan.");
+    console.warn("⚠️ Tidak ada data progres Mempawah yang ditarik dari SQL Lab. Operasi dibatalkan.");
     return;
   }
 
-  // Format data baru Mempawah ke bentuk 2D Array
+  // Format data baru Mempawah persis mengikuti 19 Kolom
   const freshMempawahFormatted = freshMempawahRaw.map(item => [
-    "", // 'No' akan di-reindex secara deterministik
+    "",
     item.kab_kota || "MEMPAWAH",
     "'" + item.kode_sub_sls,
     item.username_petugas || "-",
@@ -236,7 +245,7 @@ export async function syncProgressFromSqlLab() {
     item.role || "Pencacah",
     item.total_target || 0,
     item.draft || 0,
-    item.open || 0,
+    item.open_status || 0,
     item.submitted_respondent || 0,
     item.submitted_pencacah || 0,
     item.approved_pengawas || 0,
@@ -249,32 +258,37 @@ export async function syncProgressFromSqlLab() {
     item.revoked_admin || 0,
   ]);
 
-  // 3. Selective Merge & Re-index Idempoten
+  // 3. Selective Merge & Re-index
   const mergedBodyRows = [...nonMempawahRows, ...freshMempawahFormatted];
-
-  // Re-index kolom 'No' (Kolom 0)
   mergedBodyRows.forEach((row, idx) => {
     row[0] = idx + 1;
   });
 
-  console.log(`\n📊 RINGKASAN HASIL PENGGABUNGAN (SELECTIVE MERGE):`);
+  console.log(`\n📊 RINGKASAN HASIL PENGGABUNGAN:`);
   console.log(`   - Data Non-Mempawah (13 Kab/Kota dipertahankan): ${nonMempawahRows.length} baris`);
   console.log(`   - Data Baru Mempawah (diperbarui via SQL Lab): ${freshMempawahFormatted.length} baris`);
   console.log(`   - Total Baris yang Akan Diunggah: ${mergedBodyRows.length} baris`);
 
-  // 4. Unggah data hasil merge secara deterministik
-  const range = "6100!A1";
-  console.log(`\n→ Membersihkan lembar kerja ${range}...`);
-  await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range });
+  // 4. Update Header A1:S1
+  console.log(`→ Updating Header 19 kolom di Tab '6100' Range A1:S1...`);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "6100!A1:S1",
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [EXACT_HEADERS] },
+  });
 
-  console.log(`→ Mengunggah ${mergedBodyRows.length} baris data ke Tab "6100"...`);
+  // 5. Clean & Upload Data Body
+  console.log(`→ Membersihkan data di Range 6100!A2:S50000...`);
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: "6100!A2:S50000",
+  });
 
   const chunkSize = 10000;
-  const totalUpload = [headers, ...mergedBodyRows];
-
-  for (let i = 0; i < totalUpload.length; i += chunkSize) {
-    const chunk = totalUpload.slice(i, i + chunkSize);
-    const startRow = i + 1;
+  for (let i = 0; i < mergedBodyRows.length; i += chunkSize) {
+    const chunk = mergedBodyRows.slice(i, i + chunkSize);
+    const startRow = i + 2;
     console.log(`  → Mengunggah chunk baris ${startRow} - ${startRow + chunk.length - 1}...`);
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
@@ -284,7 +298,7 @@ export async function syncProgressFromSqlLab() {
     });
   }
 
-  console.log(`🎉 SINKRONISASI DETERMINISTIK & IDEMPOTEN SELESAI! Total ${mergedBodyRows.length} baris berhasil diperbarui di Google Sheets Tab "6100"!`);
+  console.log(`🎉 SINKRONISASI DETERMINISTIK BERHASIL! Total ${mergedBodyRows.length} baris berhasil diperbarui di Google Sheets Tab "6100"!`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

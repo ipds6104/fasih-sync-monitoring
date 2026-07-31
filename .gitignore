@@ -10,6 +10,8 @@ cookies/
 *.pem
 # Google Cloud service account credentials
 *-credentials.json
+credentials.json
+token_user.json
 cerdas-*.json
 google-cloud-*.json
 service-account-*.json
