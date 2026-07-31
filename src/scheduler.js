@@ -171,15 +171,35 @@ const runCommand = (command) =>
 
     const child = spawn("node", ["src/index.js", command], {
       cwd: resolve(__dirname, ".."),
-      stdio: "inherit",
+    });
+
+    let output = "";
+    let errorOutput = "";
+
+    child.stdout.on("data", (data) => {
+      const str = data.toString();
+      output += str;
+      process.stdout.write(data);
+    });
+
+    child.stderr.on("data", (data) => {
+      const str = data.toString();
+      errorOutput += str;
+      process.stderr.write(data);
     });
 
     child.on("close", (code) => {
       logMsg(`[Scheduler] '${command}' selesai dengan exit code: ${code}`);
       if (code === 0 || code === null) {
-        onDone(code);
+        onDone(output);
       } else {
-        onFail(new Error(`Command '${command}' exited with code ${code}`));
+        const combined = (output + "\n" + errorOutput).trim();
+        // Bersihkan ANSI color codes agar tampilan di Discord bersih
+        const cleanOutput = combined.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, "");
+        const lines = cleanOutput.split("\n");
+        // Ambil 8 baris terakhir yang berisi error utama
+        const lastLines = lines.slice(-8).join("\n").trim();
+        onFail(new Error(lastLines || `Command '${command}' exited with code ${code}`));
       }
     });
 
@@ -216,6 +236,9 @@ cron.schedule(CRON_SCHEDULE, async () => {
   }
 });
 
+// State tracker untuk mencegah spam notifikasi sukses SQL Lab tiap jam
+let lastSqlLabFailed = false;
+
 // ── Cron Job: SQL Lab Progress Sync (Tiap 1 Jam) ────────────────────────────
 const CRON_SQLLAB_SCHEDULE = process.env.CRON_SQLLAB_SCHEDULE || "0 * * * *";
 logMsg(`[Scheduler] Registering SQL Lab job. Schedule: "${CRON_SQLLAB_SCHEDULE}"`);
@@ -226,16 +249,22 @@ cron.schedule(CRON_SQLLAB_SCHEDULE, async () => {
   try {
     await runCommand("sync-sqllab");
     logMsg(`[Scheduler] ── Sinkronisasi progres via SQL Lab selesai ──`);
-    sendDiscordAlert(
-      "✅ Sync SQL Lab SE2026 Berhasil",
-      `Sinkronisasi progres SLS Mempawah (Tab 6100) via SQL Lab ke Google Sheets sukses.\n\nWaktu: **${startTime}**`,
-      false
-    );
+    
+    // Kirim notifikasi sukses hanya jika sebelumnya sempat gagal (recovery alert)
+    if (lastSqlLabFailed) {
+      sendDiscordAlert(
+        "✅ Sync SQL Lab SE2026 Pulih Kembali",
+        `Sinkronisasi progres SLS Mempawah (Tab 6100) via SQL Lab kembali berjalan dengan sukses.\n\nWaktu Pemulihan: **${startTime}**`,
+        false
+      );
+      lastSqlLabFailed = false;
+    }
   } catch (err) {
     logMsg(`[Scheduler] ⚠ Sinkronisasi SQL Lab gagal: ${err.message}`);
+    lastSqlLabFailed = true;
     sendDiscordAlert(
-      "❌ Sync SQL Lab SE2026 GAGAL",
-      `Job sync-sqllab gagal dijalankan pada **${startTime}**.\n\nError: \`${err.message}\`\n\nSilakan cek koneksi VPN BPS atau status database StarRocks.`
+      "❌ Sync SQL Lab SE2026 (Tab 6100) GAGAL",
+      `Job sync-sqllab gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nSilakan cek koneksi VPN BPS atau status database StarRocks.`
     );
   }
 }, { timezone: "Asia/Jakarta" });
@@ -258,8 +287,8 @@ cron.schedule(CRON_DASHBOARD_SCHEDULE, async () => {
   } catch (err) {
     logMsg(`[Scheduler] ⚠ Sinkronisasi Dashboard SE2026 gagal: ${err.message}`);
     sendDiscordAlert(
-      "❌ Sync Dashboard SE2026 GAGAL",
-      `Job sync-dashboard gagal dijalankan pada **${startTime}**.\n\nError: \`${err.message}\`\n\nKemungkinan penyebab: VPN BPS terputus, sesi SSO kedaluwarsa, atau server internal BPS mengalami crash.`
+      "❌ Sync Dashboard SE2026 (Capaian & Anomali) GAGAL",
+      `Job sync-dashboard gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nKemungkinan penyebab: VPN BPS terputus, sesi SSO kedaluwarsa, atau server internal BPS mengalami crash.`
     );
   }
 }, { timezone: "Asia/Jakarta" });
