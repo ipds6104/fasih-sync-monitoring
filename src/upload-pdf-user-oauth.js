@@ -12,7 +12,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_PATH = resolve(__dirname, "..", "credentials.json");
 const USER_TOKEN_PATH = resolve(__dirname, "..", "token_user.json");
 const GDRIVE_FOLDER_ID = "1GVLa9UVOBJOr-rb62A539HnNK7UGyrXa";
-const PDF_DIR = "/home/ihza/Projects/knowledge-base/kegiatan/sensus-ekonomi-2026/2026/sqllab_monitoring/pdf_siap_cetak";
+const KB_ROOT = resolve(__dirname, "..", "..", "knowledge-base");
+const PDF_DIR = resolve(KB_ROOT, "kegiatan", "sensus-ekonomi-2026", "2026", "sqllab_monitoring", "pdf_siap_cetak");
 const LINK_MAPPING_FILE = resolve(__dirname, "..", "results", "pdf_gdrive_links.json");
 
 const SCOPES = [

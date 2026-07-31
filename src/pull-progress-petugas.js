@@ -18,8 +18,8 @@ const COOKIES_PATH = resolve(__dirname, "..", "cookies", "fasih-dashboard.json")
 const STORAGE_PATH = COOKIES_PATH.replace(".json", "-storage.json");
 const CSRF_PATH = resolve(__dirname, "..", "cookies", "fasih-csrf.txt");
 
-const OUTPUT_CSV = resolve(__dirname, "..", "..", "knowledge-base", "kegiatan", "sensus-ekonomi-2026", "2026", "outputs", "progress_petugas_se2026_mempawah.csv");
-const OUTPUT_XLSX = resolve(__dirname, "..", "..", "knowledge-base", "kegiatan", "sensus-ekonomi-2026", "2026", "outputs", "progress_petugas_se2026_mempawah.xlsx");
+const OUTPUT_CSV = resolve(__dirname, "..", "results", "progress_petugas_se2026_mempawah.csv");
+const OUTPUT_XLSX = resolve(__dirname, "..", "results", "progress_petugas_se2026_mempawah.xlsx");
 
 const ensureDir = (fp) => fs.mkdirSync(dirname(fp), { recursive: true });
 
@@ -281,7 +281,7 @@ function escapeCsvField(val) {
   return str;
 }
 
-async function run() {
+export async function runPullProgressPetugas() {
   if (!USERNAME || !PASSWORD) {
     console.error("Kredensial FASIH_USERNAME dan FASIH_PASSWORD harus diset di file .env");
     process.exit(1);
@@ -497,4 +497,6 @@ async function run() {
   console.log(`✓ File Excel berhasil disimpan ke: ${OUTPUT_XLSX}`);
 }
 
-run().catch(console.error);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  runPullProgressPetugas().catch(console.error);
+}

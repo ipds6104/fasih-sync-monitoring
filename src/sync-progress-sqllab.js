@@ -65,7 +65,7 @@ async function getAuthTokens() {
       const context = await browser.newContext({ storageState: STORAGE_PATH, ignoreHTTPSErrors: true });
       const page = await context.newPage();
       try {
-        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 45000 });
         if (!page.url().includes("/login/")) {
           const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
           if (csrfToken) return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
@@ -84,14 +84,14 @@ async function getAuthTokens() {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   try {
-    await page.goto(`${BASE_URL}/login/`, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.goto(`${BASE_URL}/login/`, { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.click("button:has-text('GO!')");
-    await page.waitForURL(url => url.hostname.includes("sso.bps.go.id"));
+    await page.waitForURL(url => url.hostname.includes("sso.bps.go.id"), { timeout: 45000 });
     await page.fill("#username", USERNAME);
     await page.fill("#password", PASSWORD);
     await page.click("#kc-login");
-    await page.waitForURL(url => url.hostname.includes("fasih-dashboard.bps.go.id"));
-    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 20000 });
+    await page.waitForURL(url => url.hostname.includes("fasih-dashboard.bps.go.id"), { timeout: 45000 });
+    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 45000 });
     const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
     if (!csrfToken) throw new Error("Failed to extract CSRF token after login.");
     const cookies = await context.cookies();

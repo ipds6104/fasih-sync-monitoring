@@ -9,6 +9,8 @@ import ExcelJS from "exceljs";
 import { syncToGoogleSheets, syncDatatableToGoogleSheets } from "./sync-sheets.js";
 import { syncFromGDrive } from "./sync-from-gdrive.js";
 import { syncDashboardSE2026 } from "./sync-dashboard-se2026.js";
+import { syncProgressFromSqlLab } from "./sync-progress-sqllab.js";
+import { runPullProgressPetugas } from "./pull-progress-petugas.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -1334,10 +1336,18 @@ if (cmd === "login") {
 } else if (cmd === "sync-gdrive") {
   syncFromGDrive().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-se2026") {
-  syncDashboardSE2026().catch((e) => { console.error(e); process.exit(1); });
+  (async () => {
+    await syncDashboardSE2026();
+    console.log("\n── Memulai sinkronisasi progres via SQL Lab ─────────────────");
+    await syncProgressFromSqlLab();
+  })().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-sqllab") {
+  syncProgressFromSqlLab().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "pull-petugas") {
+  runPullProgressPetugas().catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-sqllab|pull-petugas]");
   process.exit(1);
 }
 

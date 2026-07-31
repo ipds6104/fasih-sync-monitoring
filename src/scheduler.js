@@ -76,10 +76,48 @@ const logMsg = (msg) => {
 
 logMsg(`[Scheduler] Starting... Schedule: "${CRON_SCHEDULE}"`);
 
+// ── Discord Webhook Notifier ───────────────────────────────────────────────
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
+
+const sendDiscordAlert = (title, description, isError = true) => {
+  if (!DISCORD_WEBHOOK_URL) return;
+  try {
+    const color = isError ? 0xED4245 : 0x57F287; // merah = error, hijau = ok
+    const body = JSON.stringify({
+      embeds: [{
+        title,
+        description,
+        color,
+        timestamp: new Date().toISOString(),
+        footer: { text: "Fasih Sync Monitoring" },
+      }]
+    });
+    const url = new URL(DISCORD_WEBHOOK_URL);
+    const req = https.request({
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      rejectUnauthorized: false,
+    }, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        logMsg(`[Discord] Webhook responded with status ${res.statusCode}`);
+      }
+    });
+    req.on("error", (e) => logMsg(`[Discord] Webhook error: ${e.message}`));
+    req.write(body);
+    req.end();
+  } catch (e) {
+    logMsg(`[Discord] Failed to send alert: ${e.message}`);
+  }
+};
+
 // ── Keep-Alive Loop ────────────────────────────────────────────────────────
 // Pings the BPS intranet server every 3 minutes to keep the VPN connection active
 const KEEP_ALIVE_URL = "https://fasih-sm.bps.go.id";
 const KEEP_ALIVE_INTERVAL = 3 * 60 * 1000; // 3 minutes
+let keepAliveFailCount = 0;
+const KEEP_ALIVE_FAIL_THRESHOLD = 3; // notifikasi setelah 3 kali gagal berturut-turut
 
 logMsg(`[Keep-Alive] Initializing keep-alive ping to ${KEEP_ALIVE_URL} every 3 minutes`);
 
@@ -91,10 +129,21 @@ const pingKeepAlive = () => {
       rejectUnauthorized: false
     }, (res) => {
       logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} succeeded with status ${res.statusCode}`);
+      if (keepAliveFailCount >= KEEP_ALIVE_FAIL_THRESHOLD) {
+        sendDiscordAlert("✅ VPN BPS Kembali Terhubung", `Keep-alive ping ke \`${KEEP_ALIVE_URL}\` berhasil kembali setelah sebelumnya gagal ${keepAliveFailCount}x.`, false);
+      }
+      keepAliveFailCount = 0;
     });
 
     req.on("error", (err) => {
       logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} failed: ${err.message}`);
+      keepAliveFailCount++;
+      if (keepAliveFailCount === KEEP_ALIVE_FAIL_THRESHOLD) {
+        sendDiscordAlert(
+          "⚠️ VPN BPS Kemungkinan Terputus",
+          `Keep-alive ping ke \`${KEEP_ALIVE_URL}\` gagal **${keepAliveFailCount}x berturut-turut**.\n\nError: \`${err.message}\`\n\nSilakan cek koneksi VPN BPS. Jika VPN mati, cron sync anomali SE2026 berikutnya akan gagal.`
+        );
+      }
     });
 
     req.on("timeout", () => {
@@ -105,6 +154,7 @@ const pingKeepAlive = () => {
     req.end();
   } catch (err) {
     logMsg(`[Keep-Alive] Ping to ${KEEP_ALIVE_URL} failed: ${err.message}`);
+    keepAliveFailCount++;
   }
 };
 
@@ -166,17 +216,27 @@ cron.schedule(CRON_SCHEDULE, async () => {
   }
 });
 
-// ── Cron Job SE2026 (Setiap hari pukul 06:15 WIB) ──────────────────────────
-const CRON_SE2026_SCHEDULE = process.env.CRON_SE2026_SCHEDULE || "15 6 * * *";
+// ── Cron Job SE2026 ────────────────────────────────────────────────────────
+const CRON_SE2026_SCHEDULE = process.env.CRON_SE2026_SCHEDULE || "0 * * * *";
 logMsg(`[Scheduler] Registering SE2026 job. Schedule: "${CRON_SE2026_SCHEDULE}"`);
 
 cron.schedule(CRON_SE2026_SCHEDULE, async () => {
-  logMsg(`[Scheduler] ── Mulai job terjadwal SE2026 (06:15 WIB) ──`);
+  const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+  logMsg(`[Scheduler] ── Mulai job terjadwal SE2026 ──`);
   try {
     await runCommand("sync-se2026");
     logMsg(`[Scheduler] ── Job terjadwal SE2026 selesai ──`);
+    sendDiscordAlert(
+      "✅ Sync Anomali SE2026 Berhasil",
+      `Sinkronisasi data Capaian + Anomali Usaha + Anomali Keluarga 6104 ke Google Sheets selesai.\n\nWaktu: **${startTime}**`,
+      false
+    );
   } catch (err) {
     logMsg(`[Scheduler] ⚠ Job terjadwal SE2026 gagal: ${err.message}`);
+    sendDiscordAlert(
+      "❌ Sync Anomali SE2026 GAGAL",
+      `Job sync-se2026 gagal dijalankan pada **${startTime}**.\n\nError:\n\`\`\`\n${err.message}\n\`\`\`\n\nKemungkinan penyebab: VPN BPS terputus atau sesi SSO gagal. Silakan cek log PM2 dengan \`npx pm2 logs fasih-sync-scheduler\`.`
+    );
   }
 });
 

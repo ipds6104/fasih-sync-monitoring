@@ -11,7 +11,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CREDENTIALS_PATH = resolve(__dirname, "..", "cerdas-486720-7bebb7cc9924.json");
 const SPREADSHEET_ID = "1QWwKu8VMg3jwTW6q1SShMBzS10jkBy6Y4wEd7IDWzb0";
 const TAB_TITLE = "Ranking SLS Tidak Ditemukan";
-const CSV_PATH = "/home/ihza/Projects/knowledge-base/kegiatan/sensus-ekonomi-2026/2026/sqllab_monitoring/csv/subsls_tidak_ditemukan_ranking.csv";
+const KB_ROOT = resolve(__dirname, "..", "..", "knowledge-base");
+const CSV_PATH = resolve(KB_ROOT, "kegiatan", "sensus-ekonomi-2026", "2026", "sqllab_monitoring", "csv", "subsls_tidak_ditemukan_ranking.csv");
 
 function parseCSVLine(text) {
   const result = [];
