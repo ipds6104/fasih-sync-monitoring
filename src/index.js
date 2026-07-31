@@ -1355,6 +1355,34 @@ if (cmd === "login") {
       sqllabError = e;
     }
 
+    // Tulis status ke file hasil untuk dibaca scheduler & Discord
+    const statusData = {
+      timestamp: new Date().toISOString(),
+      dashboard: {
+        success: !dashboardError,
+        error: dashboardError ? dashboardError.message : null
+      },
+      sqllab: {
+        success: !sqllabError,
+        error: sqllabError ? sqllabError.message : null
+      }
+    };
+    try {
+      const fs = await import("fs");
+      const path = await import("path");
+      const resultsDir = path.resolve(process.cwd(), "results");
+      if (!fs.existsSync(resultsDir)) {
+        fs.mkdirSync(resultsDir, { recursive: true });
+      }
+      fs.writeFileSync(
+        path.resolve(resultsDir, "sync-status-se2026.json"),
+        JSON.stringify(statusData, null, 2),
+        "utf8"
+      );
+    } catch (fsErr) {
+      console.error("⚠ Gagal menulis file status sync-se2026:", fsErr.message);
+    }
+
     if (dashboardError || sqllabError) {
       const messages = [];
       if (dashboardError) messages.push(`Dashboard SE2026 Sync: ${dashboardError.message}`);

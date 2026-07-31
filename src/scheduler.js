@@ -226,17 +226,51 @@ cron.schedule(CRON_SE2026_SCHEDULE, async () => {
   try {
     await runCommand("sync-se2026");
     logMsg(`[Scheduler] ── Job terjadwal SE2026 selesai ──`);
+
+    let statusText = "";
+    try {
+      const statusPath = resolve(__dirname, "../results/sync-status-se2026.json");
+      if (existsSync(statusPath)) {
+        const statusData = JSON.parse(readFileSync(statusPath, "utf8"));
+        statusText = `\n\n**Status Sub-task**:\n` +
+          `• **Dashboard SE2026 Sync**: ${statusData.dashboard.success ? "✅ Berhasil" : "❌ Gagal"}\n` +
+          `• **SQL Lab Sync (Tab 6100)**: ${statusData.sqllab.success ? "✅ Berhasil" : "❌ Gagal"}`;
+      }
+    } catch (e) {}
+
     sendDiscordAlert(
       "✅ Sync Anomali SE2026 Berhasil",
-      `Sinkronisasi data Capaian + Anomali Usaha + Anomali Keluarga 6104 ke Google Sheets selesai.\n\nWaktu: **${startTime}**`,
+      `Sinkronisasi data Capaian + Anomali Usaha + Anomali Keluarga 6104 ke Google Sheets selesai.${statusText}\n\nWaktu: **${startTime}**`,
       false
     );
   } catch (err) {
     logMsg(`[Scheduler] ⚠ Job terjadwal SE2026 gagal: ${err.message}`);
-    sendDiscordAlert(
-      "❌ Sync Anomali SE2026 GAGAL",
-      `Job sync-se2026 gagal dijalankan pada **${startTime}**.\n\nError:\n\`\`\`\n${err.message}\n\`\`\`\n\nKemungkinan penyebab: VPN BPS terputus atau sesi SSO gagal. Silakan cek log PM2 dengan \`npx pm2 logs fasih-sync-scheduler\`.`
-    );
+
+    let statusText = "";
+    let isPartial = false;
+    try {
+      const statusPath = resolve(__dirname, "../results/sync-status-se2026.json");
+      if (existsSync(statusPath)) {
+        const statusData = JSON.parse(readFileSync(statusPath, "utf8"));
+        const dashStatus = statusData.dashboard.success ? "✅ Berhasil" : `❌ Gagal (\`${statusData.dashboard.error || "Unknown Error"}\`)`;
+        const sqlStatus = statusData.sqllab.success ? "✅ Berhasil" : `❌ Gagal (\`${statusData.sqllab.error || "Unknown Error"}\`)`;
+        
+        statusText = `\n\n**Detail Status Sub-task**:\n` +
+          `• **Dashboard SE2026 Sync**: ${dashStatus}\n` +
+          `• **SQL Lab Sync (Tab 6100)**: ${sqlStatus}`;
+          
+        if (statusData.dashboard.success || statusData.sqllab.success) {
+          isPartial = true;
+        }
+      }
+    } catch (e) {}
+
+    const title = isPartial ? "⚠ Sync Anomali SE2026 SEBAGIAN GAGAL" : "❌ Sync Anomali SE2026 GAGAL";
+    const description = isPartial
+      ? `Job sync-se2026 selesai dengan beberapa sub-task gagal pada **${startTime}**.${statusText}\n\nSilakan cek log PM2 jika diperlukan.`
+      : `Job sync-se2026 gagal dijalankan pada **${startTime}**.\n\nError:\n\`\`\`\n${err.message}\n\`\`\`${statusText}\n\nKemungkinan penyebab: VPN BPS terputus atau sesi SSO gagal. Silakan cek log PM2 dengan \`npx pm2 logs fasih-sync-scheduler\`.`;
+
+    sendDiscordAlert(title, description, true);
   }
 });
 
