@@ -176,6 +176,7 @@ async function fetchMempawahProgressData(cookieStr, csrfToken) {
     WHERE bta.survey_period_id = 'fd68e454-ba45-4b85-8205-f3bf777ded24'
       AND bta.level_2_full_code = '61${KAB_CODE.padStart(2, '0')}'
       AND bta.level_6_full_code IS NOT NULL
+      AND bta.is_active = 1
     GROUP BY bta.level_2_name, bta.level_6_full_code, btu.email
     ORDER BY bta.level_6_full_code ASC, btu.email ASC
   `;

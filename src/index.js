@@ -1392,6 +1392,8 @@ if (cmd === "login") {
   })().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-sqllab") {
   syncProgressFromSqlLab().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-dashboard") {
+  syncDashboardSE2026().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "pull-petugas") {
   runPullProgressPetugas().catch((e) => { console.error(e); process.exit(1); });
 } else {

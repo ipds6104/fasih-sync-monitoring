@@ -11,8 +11,10 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = resolve(__dirname, "..", "results", "scheduler.log");
-const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "0 8 * * *";
 const LOCK_FILE = resolve(__dirname, "..", "scheduler.lock");
+
+const CRON_SQLLAB_SCHEDULE = process.env.CRON_SQLLAB_SCHEDULE || "0 * * * *";
+const CRON_DASHBOARD_SCHEDULE = process.env.CRON_DASHBOARD_SCHEDULE || "5 6 * * *";
 
 // ── Lockfile Check (Instance Prevention) ───────────────────────────────────
 if (existsSync(LOCK_FILE)) {
@@ -74,7 +76,7 @@ const logMsg = (msg) => {
   } catch {}
 };
 
-logMsg(`[Scheduler] Starting... Schedule: "${CRON_SCHEDULE}"`);
+logMsg(`[Scheduler] Starting... SQL Lab Schedule: "${CRON_SQLLAB_SCHEDULE}", Dashboard Schedule: "${CRON_DASHBOARD_SCHEDULE}"`);
 
 // ── Discord Webhook Notifier ───────────────────────────────────────────────
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "";
@@ -209,38 +211,12 @@ const runCommand = (command) =>
     });
   });
 
-// ── Cron Job ────────────────────────────────────────────────────────────────
-cron.schedule(CRON_SCHEDULE, async () => {
-  logMsg(`[Scheduler] ── Mulai job terjadwal ──`);
 
-  try {
-    if (process.env.SYNC_FROM_GDRIVE === "true") {
-      logMsg(`[Scheduler] ── Mode GDrive active: Menarik & menggabungkan file Excel dari GDrive... ──`);
-      await runCommand("sync-gdrive");
-    } else {
-      // Tahap 1: Tarik progress pencacah per SLS via direct crawl
-      await runCommand("crawl");
-
-      // Tahap 2: Tarik datatable responden (dijalankan setelah crawl selesai jika diaktifkan)
-      if (process.env.CRAWL_DATATABLE_AFTER_PROGRESS === "true") {
-        logMsg(`[Scheduler] ── Progress selesai. Melanjutkan ke datatable crawl... ──`);
-        await runCommand("crawl-datatable");
-      } else {
-        logMsg(`[Scheduler] ── Progress selesai. Datatable crawl dinonaktifkan (CRAWL_DATATABLE_AFTER_PROGRESS != true) ──`);
-      }
-    }
-
-    logMsg(`[Scheduler] ── Semua job selesai ──`);
-  } catch (err) {
-    logMsg(`[Scheduler] ⚠ Job gagal: ${err.message}`);
-  }
-});
 
 // State tracker untuk mencegah spam notifikasi sukses SQL Lab tiap jam
 let lastSqlLabFailed = false;
 
 // ── Cron Job: SQL Lab Progress Sync (Tiap 1 Jam) ────────────────────────────
-const CRON_SQLLAB_SCHEDULE = process.env.CRON_SQLLAB_SCHEDULE || "0 * * * *";
 logMsg(`[Scheduler] Registering SQL Lab job. Schedule: "${CRON_SQLLAB_SCHEDULE}"`);
 
 cron.schedule(CRON_SQLLAB_SCHEDULE, async () => {
@@ -270,7 +246,6 @@ cron.schedule(CRON_SQLLAB_SCHEDULE, async () => {
 }, { timezone: "Asia/Jakarta" });
 
 // ── Cron Job: Dashboard SE2026 Sync (Hanya Jam 06:05 WIB) ───────────────────
-const CRON_DASHBOARD_SCHEDULE = process.env.CRON_DASHBOARD_SCHEDULE || "5 6 * * *";
 logMsg(`[Scheduler] Registering Dashboard SE2026 job. Schedule: "${CRON_DASHBOARD_SCHEDULE}"`);
 
 cron.schedule(CRON_DASHBOARD_SCHEDULE, async () => {

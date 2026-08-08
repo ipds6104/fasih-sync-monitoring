@@ -309,6 +309,7 @@ export async function runPullProgressPetugas() {
       WHERE bta.survey_period_id = 'fd68e454-ba45-4b85-8205-f3bf777ded24'
         AND bta.level_2_full_code = '6104'
         AND bta.is_target = '1'
+        AND bta.is_active = 1
       GROUP BY bta.level_6_full_code
     ),
     sub_sls_ppl AS (
@@ -358,6 +359,7 @@ export async function runPullProgressPetugas() {
     WHERE bta.survey_period_id = 'fd68e454-ba45-4b85-8205-f3bf777ded24'
       AND bta.level_2_full_code = '6104'
       AND bta.is_target = '1'
+      AND bta.is_active = 1
     GROUP BY bta.level_2_name, bta.level_6_full_code, COALESCE(un.name, bta.current_user_fullname), COALESCE(btu.email, bta.current_user_username)
     ORDER BY bta.level_6_full_code ASC, COALESCE(btu.email, bta.current_user_username) ASC
     LIMIT ${chunkSize} OFFSET ${offset};
