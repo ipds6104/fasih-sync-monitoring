@@ -13,8 +13,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOG_FILE = resolve(__dirname, "..", "results", "scheduler.log");
 const LOCK_FILE = resolve(__dirname, "..", "scheduler.lock");
 
+const ENABLE_KEEP_ALIVE = process.env.ENABLE_KEEP_ALIVE !== "false";
+const ENABLE_CRON_SQLLAB = process.env.ENABLE_CRON_SQLLAB !== "false";
+const ENABLE_CRON_DASHBOARD = process.env.ENABLE_CRON_DASHBOARD !== "false";
+const ENABLE_CRON_CRAWL = process.env.ENABLE_CRON_CRAWL === "true";
+
 const CRON_SQLLAB_SCHEDULE = process.env.CRON_SQLLAB_SCHEDULE || "0 * * * *";
 const CRON_DASHBOARD_SCHEDULE = process.env.CRON_DASHBOARD_SCHEDULE || "5 6 * * *";
+const CRON_CRAWL_SCHEDULE = process.env.CRON_CRAWL_SCHEDULE || "0 6 * * *";
 
 // ── Lockfile Check (Instance Prevention) ───────────────────────────────────
 if (existsSync(LOCK_FILE)) {
@@ -121,8 +127,6 @@ const KEEP_ALIVE_INTERVAL = 3 * 60 * 1000; // 3 minutes
 let keepAliveFailCount = 0;
 const KEEP_ALIVE_FAIL_THRESHOLD = 3; // notifikasi setelah 3 kali gagal berturut-turut
 
-logMsg(`[Keep-Alive] Initializing keep-alive ping to ${KEEP_ALIVE_URL} every 3 minutes`);
-
 const pingKeepAlive = () => {
   try {
     const req = https.request(KEEP_ALIVE_URL, {
@@ -160,11 +164,14 @@ const pingKeepAlive = () => {
   }
 };
 
-// Ping once immediately on startup to verify connectivity
-pingKeepAlive();
-
-// Start periodic interval
-setInterval(pingKeepAlive, KEEP_ALIVE_INTERVAL);
+// Start Keep-Alive only if enabled
+if (ENABLE_KEEP_ALIVE) {
+  logMsg(`[Keep-Alive] Initializing keep-alive ping to ${KEEP_ALIVE_URL} every 3 minutes`);
+  pingKeepAlive();
+  setInterval(pingKeepAlive, KEEP_ALIVE_INTERVAL);
+} else {
+  logMsg(`[Keep-Alive] Disabled (ENABLE_KEEP_ALIVE = false)`);
+}
 
 // ── Helper: jalankan satu sub-command dan return Promise ───────────────────
 const runCommand = (command) =>
@@ -211,60 +218,90 @@ const runCommand = (command) =>
     });
   });
 
-
-
 // State tracker untuk mencegah spam notifikasi sukses SQL Lab tiap jam
 let lastSqlLabFailed = false;
 
 // ── Cron Job: SQL Lab Progress Sync (Tiap 1 Jam) ────────────────────────────
-logMsg(`[Scheduler] Registering SQL Lab job. Schedule: "${CRON_SQLLAB_SCHEDULE}"`);
-
-cron.schedule(CRON_SQLLAB_SCHEDULE, async () => {
-  const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
-  logMsg(`[Scheduler] ── Mulai sinkronisasi progres via SQL Lab ──`);
-  try {
-    await runCommand("sync-sqllab");
-    logMsg(`[Scheduler] ── Sinkronisasi progres via SQL Lab selesai ──`);
-    
-    // Kirim notifikasi sukses hanya jika sebelumnya sempat gagal (recovery alert)
-    if (lastSqlLabFailed) {
+if (ENABLE_CRON_SQLLAB) {
+  logMsg(`[Scheduler] Registering SQL Lab job. Schedule: "${CRON_SQLLAB_SCHEDULE}"`);
+  cron.schedule(CRON_SQLLAB_SCHEDULE, async () => {
+    const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+    logMsg(`[Scheduler] ── Mulai sinkronisasi progres via SQL Lab ──`);
+    try {
+      await runCommand("sync-sqllab");
+      logMsg(`[Scheduler] ── Sinkronisasi progres via SQL Lab selesai ──`);
+      
+      // Kirim notifikasi sukses hanya jika sebelumnya sempat gagal (recovery alert)
+      if (lastSqlLabFailed) {
+        sendDiscordAlert(
+          "✅ Sync SQL Lab SE2026 Pulih Kembali",
+          `Sinkronisasi progres SLS Mempawah (Tab 6100) via SQL Lab kembali berjalan dengan sukses.\n\nWaktu Pemulihan: **${startTime}**`,
+          false
+        );
+        lastSqlLabFailed = false;
+      }
+    } catch (err) {
+      logMsg(`[Scheduler] ⚠ Sinkronisasi SQL Lab gagal: ${err.message}`);
+      lastSqlLabFailed = true;
       sendDiscordAlert(
-        "✅ Sync SQL Lab SE2026 Pulih Kembali",
-        `Sinkronisasi progres SLS Mempawah (Tab 6100) via SQL Lab kembali berjalan dengan sukses.\n\nWaktu Pemulihan: **${startTime}**`,
-        false
+        "❌ Sync SQL Lab SE2026 (Tab 6100) GAGAL",
+        `Job sync-sqllab gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nSilakan cek koneksi VPN BPS atau status database StarRocks.`
       );
-      lastSqlLabFailed = false;
     }
-  } catch (err) {
-    logMsg(`[Scheduler] ⚠ Sinkronisasi SQL Lab gagal: ${err.message}`);
-    lastSqlLabFailed = true;
-    sendDiscordAlert(
-      "❌ Sync SQL Lab SE2026 (Tab 6100) GAGAL",
-      `Job sync-sqllab gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nSilakan cek koneksi VPN BPS atau status database StarRocks.`
-    );
-  }
-}, { timezone: "Asia/Jakarta" });
+  }, { timezone: "Asia/Jakarta" });
+} else {
+  logMsg(`[Scheduler] SQL Lab job is disabled (ENABLE_CRON_SQLLAB = false)`);
+}
 
 // ── Cron Job: Dashboard SE2026 Sync (Hanya Jam 06:05 WIB) ───────────────────
-logMsg(`[Scheduler] Registering Dashboard SE2026 job. Schedule: "${CRON_DASHBOARD_SCHEDULE}"`);
+if (ENABLE_CRON_DASHBOARD) {
+  logMsg(`[Scheduler] Registering Dashboard SE2026 job. Schedule: "${CRON_DASHBOARD_SCHEDULE}"`);
+  cron.schedule(CRON_DASHBOARD_SCHEDULE, async () => {
+    const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+    logMsg(`[Scheduler] ── Mulai sinkronisasi Capaian/Anomali Dashboard SE2026 ──`);
+    try {
+      await runCommand("sync-dashboard");
+      logMsg(`[Scheduler] ── Sinkronisasi Capaian/Anomali Dashboard SE2026 selesai ──`);
+      sendDiscordAlert(
+        "✅ Sync Dashboard SE2026 Berhasil",
+        `Sinkronisasi data Capaian + Anomali Usaha + Anomali Keluarga 6104 dari Dashboard SE2026 ke Google Sheets sukses.\n\nWaktu: **${startTime}**`,
+        false
+      );
+    } catch (err) {
+      logMsg(`[Scheduler] ⚠ Sinkronisasi Dashboard SE2026 gagal: ${err.message}`);
+      sendDiscordAlert(
+        "❌ Sync Dashboard SE2026 (Capaian & Anomali) GAGAL",
+        `Job sync-dashboard gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nKemungkinan penyebab: VPN BPS terputus, sesi SSO kedaluwarsa, atau server internal BPS mengalami crash.`
+      );
+    }
+  }, { timezone: "Asia/Jakarta" });
+} else {
+  logMsg(`[Scheduler] Dashboard job is disabled (ENABLE_CRON_DASHBOARD = false)`);
+}
 
-cron.schedule(CRON_DASHBOARD_SCHEDULE, async () => {
-  const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
-  logMsg(`[Scheduler] ── Mulai sinkronisasi Capaian/Anomali Dashboard SE2026 ──`);
-  try {
-    await runCommand("sync-dashboard");
-    logMsg(`[Scheduler] ── Sinkronisasi Capaian/Anomali Dashboard SE2026 selesai ──`);
-    sendDiscordAlert(
-      "✅ Sync Dashboard SE2026 Berhasil",
-      `Sinkronisasi data Capaian + Anomali Usaha + Anomali Keluarga 6104 dari Dashboard SE2026 ke Google Sheets sukses.\n\nWaktu: **${startTime}**`,
-      false
-    );
-  } catch (err) {
-    logMsg(`[Scheduler] ⚠ Sinkronisasi Dashboard SE2026 gagal: ${err.message}`);
-    sendDiscordAlert(
-      "❌ Sync Dashboard SE2026 (Capaian & Anomali) GAGAL",
-      `Job sync-dashboard gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nKemungkinan penyebab: VPN BPS terputus, sesi SSO kedaluwarsa, atau server internal BPS mengalami crash.`
-    );
-  }
-}, { timezone: "Asia/Jakarta" });
+// ── Cron Job: Direct progress crawl via Fasih-SM API (Optional) ──────────────
+if (ENABLE_CRON_CRAWL) {
+  logMsg(`[Scheduler] Registering Direct Crawl job. Schedule: "${CRON_CRAWL_SCHEDULE}"`);
+  cron.schedule(CRON_CRAWL_SCHEDULE, async () => {
+    const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+    logMsg(`[Scheduler] ── Mulai penarikan progres rekap petugas via Fasih-SM API ──`);
+    try {
+      await runCommand("crawl");
+      logMsg(`[Scheduler] ── Penarikan progres rekap petugas selesai ──`);
+      sendDiscordAlert(
+        "✅ Direct Crawl Progres SE2026 Berhasil",
+        `Penarikan progres rekap petugas langsung via Fasih-SM API sukses.\n\nWaktu: **${startTime}**`,
+        false
+      );
+    } catch (err) {
+      logMsg(`[Scheduler] ⚠ Penarikan progres rekap petugas gagal: ${err.message}`);
+      sendDiscordAlert(
+        "❌ Direct Crawl Progres SE2026 GAGAL",
+        `Job crawl gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\``
+      );
+    }
+  }, { timezone: "Asia/Jakarta" });
+} else {
+  logMsg(`[Scheduler] Direct Crawl job is disabled (ENABLE_CRON_CRAWL = false)`);
+}
 
