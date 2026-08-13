@@ -193,7 +193,18 @@ Proyek ini menyediakan CLI mandiri dan library untuk mengeksekusi query SQL lang
    - Mendukung eksekusi query paralel concurrent via `Promise.all()` menggunakan `client_id` alfanumerik 10 karakter yang dihasilkan secara unik per request untuk mencegah bentrokan di database Superset.
    - Penarikan chunking paralel dipastikan **100% idempoten** dengan `ORDER BY` deterministik.
 
-4. **Dokumentasi Terkait**:
+4. **Ekstraksi Full-Schema SurrealDB Store (`src/sync-surreal-sqllab.js`)**:
+   ```bash
+   # Penarikan data 600+ kolom utuh (zero-pruning) ke SurrealDB JSON & CSV Store
+   npm run sync-surreal
+   ```
+   - **Zero-Pruning**: Mengambil 100% dari 601 kolom metadata utuh (`root_table` 310 kolom, `se2026_nested` 274 kolom, `base_table_assignment` 17+ kolom).
+   - **Server-Side Multi-Block CONCAT**: Menggunakan teknik pengemasan 12 kolom per JSON block (`CONCAT('{', ... '}')`) untuk menghindari limitasi output string Superset.
+   - **ID Batching**: Membagi penarikan assignment ke dalam batch 25 ID untuk menghindari error syntax query terlalu panjang di StarRocks.
+   - **Output**: Disimpan ke `results/surrealdb_export_store.csv` dan `results/surrealdb_document_store.json`.
+   - **Scheduler Integration**: Berjalan otomatis tiap jam pada menit 30 via `ENABLE_CRON_SURREAL=true` dan `CRON_SURREAL_SCHEDULE="30 * * * *"` di `src/scheduler.js`.
+
+5. **Dokumentasi Terkait**:
    - **[docs/SUPERSET_SQL_CRAWLER.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/SUPERSET_SQL_CRAWLER.md)** — Panduan otomatisasi & riset API SQL Lab Superset.
    - **[docs/DATA_DICTIONARY.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/DATA_DICTIONARY.md)** — Kamus data lengkap 12 tabel Superset SE2026 beserta deskripsi label kuesioner.
    - **[docs/TEMPLATE_KUESIONER_SE2026.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/TEMPLATE_KUESIONER_SE2026.md)** — Dokumentasi 773 variabel template kuesioner CAPI/CAWI & pemetaan per 17 blok kuesioner.
