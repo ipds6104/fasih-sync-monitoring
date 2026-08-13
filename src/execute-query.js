@@ -122,7 +122,7 @@ async function performLogin() {
 }
 
 // Load cached session (cookie + CSRF) without opening browser
-function loadCachedSession() {
+export function loadCachedSession() {
   if (!existsSync(COOKIES_PATH) || !existsSync(CSRF_PATH)) return null;
   try {
     const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
@@ -136,7 +136,7 @@ function loadCachedSession() {
 }
 
 // Launch browser to refresh session and get fresh CSRF token
-async function refreshSessionViaBrowser() {
+export async function refreshSessionViaBrowser() {
   const chromePath = platform() === "win32"
     ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     : "/usr/bin/google-chrome-stable";
@@ -175,7 +175,7 @@ async function refreshSessionViaBrowser() {
 }
 
 // Execute query using native fetch
-async function executeQuery(sql, cookieStr, csrfToken) {
+export async function executeQuery(sql, cookieStr, csrfToken) {
   const randStr = (len = 10) => {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let res = "";
@@ -243,18 +243,23 @@ async function run() {
   console.log("→ Mengeksekusi query SQL...");
   let res = await executeQuery(sql, cookieStr, csrfToken);
 
-  // If failed with unauthorized/CSRF issue, attempt 1 re-login retry
-  const isUnauthorized = res.status === 401 || res.status === 403;
-  let isCsrfMissing = false;
-  if (!res.ok) {
-    const text = await res.clone().text();
-    if (text.includes("CSRF token is missing") || text.includes("CSRF")) {
-      isCsrfMissing = true;
-    }
-  }
+  const checkNeedRelogin = async (response) => {
+    if (response.status === 401 || response.status === 403) return true;
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/html")) return true;
+    try {
+      const cloned = response.clone();
+      const text = await cloned.text();
+      if (text.includes("<!DOCTYPE") || text.includes("kc-login") || text.includes("BPS SSO") || text.includes("CSRF token is missing") || text.includes("CSRF")) {
+        return true;
+      }
+    } catch {}
+    return false;
+  };
 
-  if (isUnauthorized || isCsrfMissing) {
-    console.warn(`⚠️ Sesi ditolak (Status ${res.status} atau CSRF kedaluwarsa). Melakukan re-login...`);
+  const needRelogin = await checkNeedRelogin(res);
+  if (needRelogin) {
+    console.warn("⚠️ Sesi kedaluwarsa atau redirect ke login terdeteksi. Melakukan auto-relogin...");
     const fresh = await refreshSessionViaBrowser();
     res = await executeQuery(sql, fresh.cookieStr, fresh.csrfToken);
   }
@@ -277,7 +282,9 @@ async function run() {
   }
 }
 
-run().catch(err => {
-  console.error("❌ Exception terdeteksi:", err.message);
-  process.exit(1);
-});
+if (process.argv[1] && process.argv[1].endsWith("execute-query.js")) {
+  run().catch(err => {
+    console.error("❌ Exception terdeteksi:", err.message);
+    process.exit(1);
+  });
+}

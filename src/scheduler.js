@@ -15,10 +15,12 @@ const LOCK_FILE = resolve(__dirname, "..", "scheduler.lock");
 
 const ENABLE_KEEP_ALIVE = process.env.ENABLE_KEEP_ALIVE !== "false";
 const ENABLE_CRON_SQLLAB = process.env.ENABLE_CRON_SQLLAB !== "false";
+const ENABLE_CRON_SURREAL = process.env.ENABLE_CRON_SURREAL !== "false";
 const ENABLE_CRON_DASHBOARD = process.env.ENABLE_CRON_DASHBOARD !== "false";
 const ENABLE_CRON_CRAWL = process.env.ENABLE_CRON_CRAWL === "true";
 
 const CRON_SQLLAB_SCHEDULE = process.env.CRON_SQLLAB_SCHEDULE || "0 * * * *";
+const CRON_SURREAL_SCHEDULE = process.env.CRON_SURREAL_SCHEDULE || "30 * * * *";
 const CRON_DASHBOARD_SCHEDULE = process.env.CRON_DASHBOARD_SCHEDULE || "5 6 * * *";
 const CRON_CRAWL_SCHEDULE = process.env.CRON_CRAWL_SCHEDULE || "0 6 * * *";
 
@@ -251,6 +253,27 @@ if (ENABLE_CRON_SQLLAB) {
   }, { timezone: "Asia/Jakarta" });
 } else {
   logMsg(`[Scheduler] SQL Lab job is disabled (ENABLE_CRON_SQLLAB = false)`);
+}
+
+// ── Cron Job: SurrealDB Full Schema Sync (Tiap 1 Jam di Menit ke-30) ────────────
+if (ENABLE_CRON_SURREAL) {
+  logMsg(`[Scheduler] Registering SurrealDB Full Schema Sync job. Schedule: "${CRON_SURREAL_SCHEDULE}"`);
+  cron.schedule(CRON_SURREAL_SCHEDULE, async () => {
+    const startTime = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta" });
+    logMsg(`[Scheduler] ── Mulai SurrealDB Full Schema Sync ──`);
+    try {
+      await runCommand("sync-surreal");
+      logMsg(`[Scheduler] ── SurrealDB Full Schema Sync selesai ──`);
+    } catch (err) {
+      logMsg(`[Scheduler] ⚠ SurrealDB Full Schema Sync gagal: ${err.message}`);
+      sendDiscordAlert(
+        "❌ SurrealDB Full Schema Sync GAGAL",
+        `Job sync-surreal gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\``
+      );
+    }
+  }, { timezone: "Asia/Jakarta" });
+} else {
+  logMsg(`[Scheduler] SurrealDB Sync job is disabled (ENABLE_CRON_SURREAL = false)`);
 }
 
 // ── Cron Job: Dashboard SE2026 Sync (Hanya Jam 06:05 WIB) ───────────────────
