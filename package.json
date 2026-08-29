@@ -11,6 +11,8 @@
     "sync-gdrive": "node src/index.js sync-gdrive",
     "sync-se2026": "node src/index.js sync-se2026",
     "sync-sqllab": "node src/sync-progress-sqllab.js",
+    "sync-surreal": "node src/sync-surreal-sqllab.js",
+    "query-surreal": "node src/query-surreal.js",
     "pull-petugas": "node src/pull-progress-petugas.js",
     "query": "node src/execute-query.js",
     "import-cookies": "node src/import-cookies.js",

@@ -44,28 +44,37 @@ const EXACT_HEADERS = [
 
 async function getChromeArgs() {
   const args = [
-    "--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled", "--disable-infobars", "--window-size=1280,800"
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-infobars",
+    "--window-size=1280,800",
+    "--ignore-certificate-errors",
+    "--host-resolver-rules=MAP fasih-dashboard.bps.go.id 10.1.110.14, MAP sso.bps.go.id 10.0.11.120"
   ];
-  for (const domain of ["fasih-dashboard.bps.go.id", "sso.bps.go.id"]) {
-    try {
-      const ips = await dns.promises.resolve4(domain);
-      if (ips?.length > 0) args.push(`--host-resolver-rules=MAP ${domain} ${ips[0]}`);
-    } catch {}
-  }
   return args;
 }
 
 async function getAuthTokens() {
+  const contextOptions = {
+    ignoreHTTPSErrors: true,
+    locale: "id-ID",
+    timezoneId: "Asia/Jakarta",
+    viewport: { width: 1280, height: 800 },
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  };
+
   if (existsSync(COOKIES_PATH) && existsSync(STORAGE_PATH)) {
     try {
       const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
       const chromePath = platform() === "win32" ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" : "/usr/bin/google-chrome-stable";
       const args = await getChromeArgs();
       const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
-      const context = await browser.newContext({ storageState: STORAGE_PATH, ignoreHTTPSErrors: true });
+      const context = await browser.newContext({ ...contextOptions, storageState: STORAGE_PATH });
       const page = await context.newPage();
       try {
-        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 45000 });
+        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "commit", timeout: 45000 });
+        await page.waitForSelector("#csrf_token", { state: "attached", timeout: 15000 }).catch(() => {});
         if (!page.url().includes("/login/")) {
           const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
           if (csrfToken) return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
@@ -76,31 +85,45 @@ async function getAuthTokens() {
     }
   }
 
-  // Full login
-  console.log("→ Melakukan login SSO BPS ke Fasih Dashboard...");
-  const chromePath = platform() === "win32" ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" : "/usr/bin/google-chrome-stable";
-  const args = await getChromeArgs();
-  const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
-  const page = await context.newPage();
-  try {
-    await page.goto(`${BASE_URL}/login/`, { waitUntil: "domcontentloaded", timeout: 45000 });
-    await page.click("button:has-text('GO!')");
-    await page.waitForURL(url => url.hostname.includes("sso.bps.go.id"), { timeout: 45000 });
-    await page.fill("#username", USERNAME);
-    await page.fill("#password", PASSWORD);
-    await page.click("#kc-login");
-    await page.waitForURL(url => url.hostname.includes("fasih-dashboard.bps.go.id"), { timeout: 45000 });
-    await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 45000 });
-    const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
-    if (!csrfToken) throw new Error("Failed to extract CSRF token after login.");
-    const cookies = await context.cookies();
-    mkdirSync(resolve(__dirname, "..", "cookies"), { recursive: true });
-    writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
-    writeFileSync(STORAGE_PATH, JSON.stringify(await context.storageState(), null, 2));
-    return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
-  } finally { await browser.close(); }
+  // Full login with retry mechanism
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    console.log(`→ Melakukan login SSO BPS ke Fasih Dashboard (Percobaan ${attempt}/2)...`);
+    const chromePath = platform() === "win32" ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" : "/usr/bin/google-chrome-stable";
+    const args = await getChromeArgs();
+    const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
+    const context = await browser.newContext(contextOptions);
+    const page = await context.newPage();
+    try {
+      await page.goto(`${BASE_URL}/login/`, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForSelector("button", { timeout: 20000 });
+      await page.click("button:has-text('GO!')");
+      await page.waitForURL(url => url.hostname.includes("sso.bps.go.id"), { timeout: 30000 });
+      await page.waitForTimeout(2000); // Allow F5 BIG-IP WAF (HaloSIS) JS challenge to complete
+      await page.waitForSelector("#username", { timeout: 20000 });
+      await page.fill("#username", USERNAME);
+      await page.fill("#password", PASSWORD);
+      await page.click("#kc-login");
+      await page.waitForURL(url => url.hostname.includes("fasih-dashboard.bps.go.id"), { timeout: 30000, waitUntil: "commit" });
+      await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "commit", timeout: 45000 });
+      await page.waitForSelector("#csrf_token", { state: "attached", timeout: 20000 });
+      const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
+      if (!csrfToken) throw new Error("Failed to extract CSRF token after login.");
+      const cookies = await context.cookies();
+      mkdirSync(resolve(__dirname, "..", "cookies"), { recursive: true });
+      writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
+      writeFileSync(STORAGE_PATH, JSON.stringify(await context.storageState(), null, 2));
+      return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
+    } catch (err) {
+      lastErr = err;
+      console.warn(`⚠️ Login percobaan ${attempt} gagal: ${err.message}`);
+    } finally {
+      await browser.close();
+    }
+  }
+  throw lastErr || new Error("Melakukan login SSO BPS ke Fasih Dashboard gagal setelah 2 percobaan.");
 }
+
 
 async function runSingleQuery(sql, cookieStr, csrfToken) {
   const payload = {
@@ -300,6 +323,19 @@ export async function syncProgressFromSqlLab() {
   }
 
   console.log(`🎉 SINKRONISASI DETERMINISTIK BERHASIL! Total ${mergedBodyRows.length} baris berhasil diperbarui di Google Sheets Tab "6100"!`);
+
+  try {
+    const statusPath = resolve(__dirname, "..", "results", "sync-status-se2026.json");
+    let currentStatus = {};
+    if (existsSync(statusPath)) {
+      try { currentStatus = JSON.parse(readFileSync(statusPath, "utf-8")); } catch {}
+    }
+    currentStatus.timestamp = new Date().toISOString();
+    currentStatus.sqllab = { success: true, error: null };
+    writeFileSync(statusPath, JSON.stringify(currentStatus, null, 2), "utf-8");
+  } catch (stErr) {
+    console.warn("⚠ Gagal memperbarui sync-status-se2026.json:", stErr.message);
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

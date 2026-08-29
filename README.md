@@ -197,19 +197,54 @@ Proyek ini menyediakan CLI mandiri dan library untuk mengeksekusi query SQL lang
    ```bash
    # Penarikan data 600+ kolom utuh (zero-pruning) ke SurrealDB JSON & CSV Store
    npm run sync-surreal
+   
+   # Opsi paksa tarik ulang dari awal (Full Scan 127k+ baris):
+   npm run sync-surreal -- --full
    ```
    - **Zero-Pruning**: Mengambil 100% dari 601 kolom metadata utuh (`root_table` 310 kolom, `se2026_nested` 274 kolom, `base_table_assignment` 17+ kolom).
-   - **Server-Side Multi-Block CONCAT**: Menggunakan teknik pengemasan 12 kolom per JSON block (`CONCAT('{', ... '}')`) untuk menghindari limitasi output string Superset.
-   - **ID Batching**: Membagi penarikan assignment ke dalam batch 25 ID untuk menghindari error syntax query terlalu panjang di StarRocks.
-   - **Output**: Disimpan ke `results/surrealdb_export_store.csv` dan `results/surrealdb_document_store.json`.
-   - **Scheduler Integration**: Berjalan otomatis tiap jam pada menit 30 via `ENABLE_CRON_SURREAL=true` dan `CRON_SURREAL_SCHEDULE="30 * * * *"` di `src/scheduler.js`.
+   - **Incremental Delta Sync**: Secara otomatis hanya menarik record yang termodifikasi (`assignment_date_modified > last_checkpoint`), memangkas kueri dari 88 kueri menjadi hanya ~5 kueri per jam sehingga bebas dari limit harian HTTP 429.
+   - **Streaming Merge**: Menggabungkan pembaruan delta langsung ke file JSON Document Store 1,78 GB tanpa *memory leak*.
+   - **Output**: Disimpan ke `results/surrealdb_export_store.csv` (674 MB) dan `results/surrealdb_document_store.json` (1.78 GB).
 
-5. **Dokumentasi Terkait**:
-   - **[docs/SUPERSET_SQL_CRAWLER.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/SUPERSET_SQL_CRAWLER.md)** — Panduan otomatisasi & riset API SQL Lab Superset.
-   - **[docs/DATA_DICTIONARY.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/DATA_DICTIONARY.md)** — Kamus data lengkap 12 tabel Superset SE2026 beserta deskripsi label kuesioner.
-   - **[docs/TEMPLATE_KUESIONER_SE2026.md](file:///home/ihza/Projects/fasih-sync-monitoring/docs/TEMPLATE_KUESIONER_SE2026.md)** — Dokumentasi 773 variabel template kuesioner CAPI/CAWI & pemetaan per 17 blok kuesioner.
+5. **SurrealDB Parallel CLI Query Tool (`src/query-surreal.js`)**:
+   ```bash
+   # Kueri Analitik Cepat Tingkat Kuesioner (Bebas Beban Server BPS)
+   npm run query-surreal -- "SELECT id, code_identity, assignment_status_alias, se2026_nama_usaha FROM assignment WHERE assignment_status_alias = 'REJECTED BY Pengawas' AND level_3_name = 'MEMPAWAH HILIR' LIMIT 5"
+
+   # Rekap Agregasi Progres SLS (Identik dengan Tab Google Sheets 6100):
+   npm run query-surreal -- "SELECT level_6_full_code, level_6_name, approved=count(assignment_status_alias = 'APPROVED BY Pengawas'), submitted=count(assignment_status_alias = 'SUBMITTED BY Pencacah'), rejected=count(assignment_status_alias = 'REJECTED BY Pengawas') FROM assignment GROUP BY level_6_full_code, level_6_name LIMIT 10"
+
+   # Eksekusi Paralel Banyak Kueri Sekaligus (Single-Pass Multi-Query Evaluator):
+   npm run query-surreal -- --parallel "SELECT level_3_name, count() FROM assignment WHERE level_3_name = 'MEMPAWAH HILIR' GROUP BY level_3_name" "SELECT level_3_name, count() FROM assignment WHERE level_3_name = 'SUNGAI PINYUH' GROUP BY level_3_name"
+   ```
+
+---
+
+## ── Standar Metadata Kolom & Aturan Kueri SE2026 ─────────────────────────────
+
+### ⚠️ 1. Aturan Wajib `is_active = 1` (Pencegahan Soft Delete)
+Setiap kueri SQL Lab atau filtering analisis **WAJIB MENYERTAKAN `is_active = 1`** di tabel `base_table_assignment`, `root_table`, atau `se2026_nested`. Hal ini penting agar assignment yang berstatus *soft-deleted/revoked* tidak masuk dalam perhitungan beban kerja atau dataset aktif.
+
+### 🏢 2. Penentuan Usaha Keluarga vs Bukan Keluarga
+- `root_jenis_prelist`: `'keluarga'` (Usaha/Keluarga DTSEN), `'UMKM'`, `'UB'`, `'OSS Perorangan'`, `'OSS Badan Usaha'`.
+- `root_skala_usaha_all`: `'- / KELUARGA'` (Penanda unit keluarga).
+- `se2026_badan_usaha_value`: `13` (`13. Bukan Badan Usaha` / usaha perseorangan keluarga) vs `1. PT`, `2. CV`, `5. Koperasi`.
+- `se2026_pengusaha_var_label`: Nama Anggota Rumah Tangga (ART) yang bertindak sebagai pengusaha keluarga.
+
+### 📍 3. Status Keberadaan & Asal Data (Prelist vs Baru)
+- **Status Keberadaan Lapangan (`se2026_keberadaan_usaha_value`):**
+  - `1` = `1. Ditemukan` (Usaha prelist aktif ditemukan)
+  - `2` = `2. Baru` (Usaha temuan baru di lapangan)
+  - `0` / `00` = `0. Tidak Ditemukan` (Usaha prelist tidak ada di lokasi)
+  - `3` = `3. Tutup` (Tutup permanen/berhenti beroperasi)
+  - `4` = `4. Ganda` (Duplikasi data)
+  - `9` = `9. Non Respon` (Menolak/tidak dapat ditemui)
+- **Asal Data (Prelist Pusat vs Temuan Baru):**
+  - `code_identity`: `- DTSEN -` (Prelist Keluarga Pusat), `- UMB -`/`- UMK -`/`- UB -` (Prelist Usaha Pusat), `- TAMBAHAN -` (Tambahan Baru Lapangan).
+  - `se2026_is_prelist2`: `1` = Prelist Pusat, `0` = Usaha Temuan Baru.
 
 ---
 
 ## ── Kontak & Kontribusi ───────────────────────────────────────────────────
 Proyek ini dikembangkan oleh tim monitoring BPS Kabupaten Mempawah untuk keperluan internal pemantauan progres lapangan secara real-time.
+

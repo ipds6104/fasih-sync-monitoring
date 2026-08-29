@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
@@ -24,27 +24,38 @@ const CRON_SURREAL_SCHEDULE = process.env.CRON_SURREAL_SCHEDULE || "30 * * * *";
 const CRON_DASHBOARD_SCHEDULE = process.env.CRON_DASHBOARD_SCHEDULE || "5 6 * * *";
 const CRON_CRAWL_SCHEDULE = process.env.CRON_CRAWL_SCHEDULE || "0 6 * * *";
 
-// ── Lockfile Check (Instance Prevention) ───────────────────────────────────
+// ── Lockfile Check (Instance Prevention & Robust Auto-Clean) ──────────────────
 if (existsSync(LOCK_FILE)) {
+  let isRunning = false;
   try {
     const oldPidStr = readFileSync(LOCK_FILE, "utf-8").trim();
     const oldPid = parseInt(oldPidStr, 10);
-    if (!isNaN(oldPid)) {
-      // Test if process is actually running
-      process.kill(oldPid, 0);
-      console.error(`[Scheduler] Error: Another instance with PID ${oldPid} is already running.`);
-      process.exit(0); // Exit gracefully so PM2 doesn't crash loop endlessly
+    if (!isNaN(oldPid) && oldPid !== process.pid) {
+      if (process.platform === "win32") {
+        const out = execSync(`tasklist /FI "PID eq ${oldPid}" /FO CSV /NH`, {
+          encoding: "utf-8",
+          stdio: ["pipe", "pipe", "ignore"],
+        });
+        if (out && out.toLowerCase().includes("node.exe")) {
+          isRunning = true;
+        }
+      } else {
+        process.kill(oldPid, 0);
+        isRunning = true;
+      }
     }
-  } catch (err) {
-    if (err.code === "ESRCH") {
-      // The process from the lockfile is dead, delete the stale lockfile
-      try {
-        unlinkSync(LOCK_FILE);
-      } catch {}
-    } else {
-      console.error(`[Scheduler] Error checking lock file: ${err.message}`);
-      process.exit(1);
-    }
+  } catch {
+    isRunning = false;
+  }
+
+  if (isRunning) {
+    console.error(`[Scheduler] Error: Another active instance is already running.`);
+    process.exit(0); // Exit gracefully so PM2 doesn't crash loop endlessly
+  } else {
+    // The previous process is dead; safely clear the stale lockfile
+    try {
+      unlinkSync(LOCK_FILE);
+    } catch {}
   }
 }
 

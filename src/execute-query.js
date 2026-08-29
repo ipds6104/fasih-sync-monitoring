@@ -27,22 +27,9 @@ async function getChromeArgs() {
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
     "--window-size=1280,800",
+    "--ignore-certificate-errors",
+    "--host-resolver-rules=MAP fasih-dashboard.bps.go.id 10.1.110.14, MAP sso.bps.go.id 10.0.11.120"
   ];
-  const domains = ["fasih-dashboard.bps.go.id", "sso.bps.go.id"];
-  const rules = [];
-  for (const domain of domains) {
-    try {
-      const ips = await dns.promises.resolve4(domain);
-      if (ips && ips.length > 0) {
-        rules.push(`MAP ${domain} ${ips[0]}`);
-      }
-    } catch (err) {
-      console.warn(`  ⚠️ Gagal resolusi DNS lokal untuk ${domain}: ${err.message}`);
-    }
-  }
-  if (rules.length > 0) {
-    args.push(`--host-resolver-rules=${rules.join(', ')}`);
-  }
   return args;
 }
 
@@ -175,7 +162,7 @@ export async function refreshSessionViaBrowser() {
 }
 
 // Execute query using native fetch
-export async function executeQuery(sql, cookieStr, csrfToken) {
+export async function executeQuery(sql, cookieStr, csrfToken, queryLimit = 9000) {
   const randStr = (len = 10) => {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let res = "";
@@ -197,7 +184,7 @@ export async function executeQuery(sql, cookieStr, csrfToken) {
     tmp_table_name: "",
     select_as_cta: false,
     ctas_method: "TABLE",
-    queryLimit: 1000,
+    queryLimit: queryLimit || 9000,
     expand_data: true
   };
 
@@ -212,6 +199,11 @@ export async function executeQuery(sql, cookieStr, csrfToken) {
     },
     body: JSON.stringify(payload)
   });
+
+  if (res.status === 429) {
+    console.warn("\n⚠️ [Superset Rate Limit] Kuota kueri harian BPS Superset (300 per 1 hari) tercapai untuk akun ini.");
+    console.warn("   Server BPS memblokir kueri sementara. Kuota akan ter-reset otomatis di pergantian hari/window 24 jam.\n");
+  }
 
   return res;
 }

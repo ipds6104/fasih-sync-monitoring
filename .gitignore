@@ -18,6 +18,11 @@ service-account-*.json
 
 # ── Results & Data ─────────────────────────────────────────────────────────────
 results/
+data/
+*.db
+*.sst
+*.vlog
+*.wal
 
 # ── Debug Artifacts ────────────────────────────────────────────────────────────
 debug-*.png
