@@ -294,10 +294,10 @@ export async function syncProgressFromSqlLab() {
     const rowIdx = idx + 2;
     row[0] = idx + 1;
     // Formula columns T to Y
-    row[19] = `=C${rowIdx}`; // T: Subls Unique
-    row[20] = `=IF(COUNTIF(C:C, C${rowIdx})>1, "DOBEL", "TIDAK")`; // U: Ada dobel Subsls Unique
-    row[21] = `=IFERROR(VLOOKUP(D${rowIdx}, 'Mitra 6104'!A:D, 4, FALSE), IFERROR(VLOOKUP(C${rowIdx}, 'SE2026'!B:D, 3, FALSE), "-"))`; // V: Nama PPL
-    row[22] = `=K${rowIdx}+L${rowIdx}`; // W: Total Submit
+    row[21] = `=PROPER(IFERROR(VLOOKUP(D${rowIdx}, 'Mitra 6104'!A:D, 4, FALSE), IFERROR(VLOOKUP(C${rowIdx}, 'SE2026'!B:D, 3, FALSE), "-")))`; // V: Nama PPL (Proper Case)
+    row[19] = `=C${rowIdx}&" - "&V${rowIdx}`; // T: Subls Unique (Sub-SLS + Nama PPL)
+    row[20] = `=IF(COUNTIF(T:T, T${rowIdx})>1, "DOBEL", "TIDAK")`; // U: Ada dobel Subsls Unique
+    row[22] = `=SUM(J${rowIdx}:S${rowIdx})`; // W: Total Submit (All submitted/approved/admin statuses J to S)
     row[23] = `=H${rowIdx}+W${rowIdx}`; // X: Total Submit + draft
     row[24] = `=G${rowIdx}*$Z$1`; // Y: Target Progres
   });
