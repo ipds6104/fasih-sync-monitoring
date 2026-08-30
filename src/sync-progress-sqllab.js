@@ -288,24 +288,43 @@ export async function syncProgressFromSqlLab() {
     item.revoked_admin || 0,
   ]);
 
-  // 3. Selective Merge & Re-index
+  // 3. Selective Merge & Re-index with Formula Columns (T to Y)
   const mergedBodyRows = [...nonMempawahRows, ...freshMempawahFormatted];
   mergedBodyRows.forEach((row, idx) => {
+    const rowIdx = idx + 2;
     row[0] = idx + 1;
+    // Formula columns T to Y
+    row[19] = `=C${rowIdx}`; // T: Subls Unique
+    row[20] = `=IF(COUNTIF(C:C, C${rowIdx})>1, "DOBEL", "TIDAK")`; // U: Ada dobel Subsls Unique
+    row[21] = `=IFERROR(VLOOKUP(D${rowIdx}, 'Mitra 6104'!A:D, 4, FALSE), IFERROR(VLOOKUP(C${rowIdx}, 'SE2026'!B:D, 3, FALSE), "-"))`; // V: Nama PPL
+    row[22] = `=K${rowIdx}+L${rowIdx}`; // W: Total Submit
+    row[23] = `=H${rowIdx}+W${rowIdx}`; // X: Total Submit + draft
+    row[24] = `=G${rowIdx}*$Z$1`; // Y: Target Progres
   });
+
+  const fullHeaders = [
+    ...EXACT_HEADERS,
+    "Subls Unique",
+    "Ada dobel Subsls Unique",
+    "Nama PPL",
+    "Total Submit",
+    "Total Submit + draft",
+    "Target Progres Hari Ini Agar Tepat Waktu (31Agustus 2026) ",
+    0.4805
+  ];
 
   console.log(`\n📊 RINGKASAN HASIL PENGGABUNGAN:`);
   console.log(`   - Data Non-Mempawah (13 Kab/Kota dipertahankan): ${nonMempawahRows.length} baris`);
   console.log(`   - Data Baru Mempawah (diperbarui via SQL Lab): ${freshMempawahFormatted.length} baris`);
-  console.log(`   - Total Baris yang Akan Diunggah: ${mergedBodyRows.length} baris`);
+  console.log(`   - Total Baris yang Akan Diunggah: ${mergedBodyRows.length} baris (Kolom A s.d. Z)`);
 
-  // 4. Update Header A1:S1
-  console.log(`→ Updating Header 19 kolom di Tab '6100' Range A1:S1...`);
+  // 4. Update Header A1:Z1
+  console.log(`→ Updating Header 26 kolom di Tab '6100' Range A1:Z1...`);
   await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
-    range: "6100!A1:S1",
+    range: "6100!A1:Z1",
     valueInputOption: "USER_ENTERED",
-    requestBody: { values: [EXACT_HEADERS] },
+    requestBody: { values: [fullHeaders] },
   });
 
   // 5. Clean & Upload Data Body
