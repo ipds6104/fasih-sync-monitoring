@@ -246,8 +246,14 @@ export async function syncProgressFromSqlLab() {
   const allExisting = sheetRes.data.values || [];
   const existingRows = allExisting.slice(1);
 
-  // Filter out Mempawah rows to preserve 13 other Kab/Kota intact
-  const nonMempawahRows = existingRows.filter(r => r[1] !== "MEMPAWAH");
+  // Filter ONLY valid non-empty rows that belong to other Kab/Kota (ignoring blank rows and Mempawah 6104)
+  const nonMempawahRows = existingRows.filter(r => {
+    if (!r || !r[1] || !r[2]) return false;
+    const kab = String(r[1]).trim().toUpperCase();
+    const code = String(r[2]).replace(/^'/, "").trim();
+    if (!kab || !code) return false;
+    return kab !== "MEMPAWAH" && !code.startsWith("6104");
+  });
   console.log(`📌 Data Non-Mempawah yang dipertahankan 100% utuh: ${nonMempawahRows.length} baris`);
 
   // 2. Tarik data baru Mempawah dari SQL Lab
@@ -303,13 +309,13 @@ export async function syncProgressFromSqlLab() {
   });
 
   // 5. Clean & Upload Data Body
-  console.log(`→ Membersihkan data di Range 6100!A2:S50000...`);
+  console.log(`→ Membersihkan seluruh data lama di Range 6100!A2:Z...`);
   await sheets.spreadsheets.values.clear({
     spreadsheetId: SPREADSHEET_ID,
-    range: "6100!A2:S50000",
+    range: "6100!A2:Z",
   });
 
-  const chunkSize = 10000;
+  const chunkSize = 5000;
   for (let i = 0; i < mergedBodyRows.length; i += chunkSize) {
     const chunk = mergedBodyRows.slice(i, i + chunkSize);
     const startRow = i + 2;
@@ -320,6 +326,39 @@ export async function syncProgressFromSqlLab() {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: chunk },
     });
+  }
+
+  // 6. Rapikan dimensi grid baris kosong berlebih di Google Sheets
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+    const sheet6100 = meta.data.sheets.find(s => s.properties.title === "6100");
+    if (sheet6100) {
+      const currentGridRows = sheet6100.properties.gridProperties.rowCount;
+      const targetGridRows = Math.max(100, mergedBodyRows.length + 50);
+      if (currentGridRows > targetGridRows) {
+        console.log(`  → Memangkas baris kosong Google Sheets (${currentGridRows} -> ${targetGridRows} baris)...`);
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: SPREADSHEET_ID,
+          requestBody: {
+            requests: [
+              {
+                updateSheetProperties: {
+                  properties: {
+                    sheetId: sheet6100.properties.sheetId,
+                    gridProperties: {
+                      rowCount: targetGridRows
+                    }
+                  },
+                  fields: "gridProperties.rowCount"
+                }
+              }
+            ]
+          }
+        });
+      }
+    }
+  } catch (gridErr) {
+    console.warn("⚠️ Gagal memangkas grid baris kosong:", gridErr.message);
   }
 
   console.log(`🎉 SINKRONISASI DETERMINISTIK BERHASIL! Total ${mergedBodyRows.length} baris berhasil diperbarui di Google Sheets Tab "6100"!`);
