@@ -294,7 +294,7 @@ export async function syncProgressFromSqlLab() {
     const rowIdx = idx + 2;
     row[0] = idx + 1;
     // Formula columns T to Y
-    row[21] = `=PROPER(TRIM(IFERROR(VLOOKUP(D${rowIdx}, 'Mitra 6104'!A:D, 4, FALSE), IFERROR(VLOOKUP(C${rowIdx}, 'SE2026'!B:D, 3, FALSE), "-"))))`; // V: Nama PPL (Proper & Trimmed)
+    row[21] = `=PROPER(TRIM(IFERROR(INDEX('SE2026'!D:D, MATCH(D${rowIdx}, 'SE2026'!E:E, 0)), IFERROR(INDEX('Mitra 6104'!B:B, MATCH(D${rowIdx}, 'Mitra 6104'!E:E, 0)), IFERROR(VLOOKUP(C${rowIdx}, 'SE2026'!B:D, 3, FALSE), "-")))))`; // V: Nama PPL (Email-based match)
     row[19] = `=C${rowIdx}&V${rowIdx}`; // T: Subls Unique (Direct Concat Sub-SLS + Nama PPL)
     row[20] = `=IF(COUNTIF(T:T, T${rowIdx})>1, "DOBEL", "TIDAK")`; // U: Ada dobel Subsls Unique
     row[22] = `=SUM(J${rowIdx}:S${rowIdx})`; // W: Total Submit (All submitted/approved/admin statuses J to S)
