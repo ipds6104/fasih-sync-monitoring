@@ -13,12 +13,14 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COOKIES_PATH = resolve(__dirname, "..", "cookies", "fasih-dashboard.json");
 const STORAGE_PATH = COOKIES_PATH.replace(".json", "-storage.json");
+const CSRF_PATH = resolve(__dirname, "..", "cookies", "fasih-csrf.txt");
 const CREDENTIALS_PATH = resolve(__dirname, "..", process.env.GOOGLE_APPLICATION_CREDENTIALS || "cerdas-486720-7bebb7cc9924.json");
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || "1Jg5DwJUWu0Q-LmHXFabRBDbcxsymX0gmPPcrh_dZQyE";
 const BASE_URL = "https://fasih-dashboard.bps.go.id";
 const USERNAME = process.env.FASIH_USERNAME;
 const PASSWORD = process.env.FASIH_PASSWORD;
 const KAB_CODE = process.env.DATATABLE_KABUPATEN_CODES || "04";
+const LISTING_TAB_NAME = process.env.GSHEET_LISTING_TAB || "Done Listing";
 
 const EXACT_HEADERS = [
   "No",
@@ -42,6 +44,8 @@ const EXACT_HEADERS = [
   "REVOKED BY Admin Kabupaten"
 ];
 
+import { canExecuteQuery, recordQueryExecution } from "./quota-tracker.js";
+
 async function getChromeArgs() {
   const args = [
     "--no-sandbox",
@@ -49,9 +53,15 @@ async function getChromeArgs() {
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
     "--window-size=1280,800",
-    "--ignore-certificate-errors",
-    "--host-resolver-rules=MAP fasih-dashboard.bps.go.id 10.1.110.14, MAP sso.bps.go.id 10.0.11.120"
+    "--ignore-certificate-errors"
   ];
+  try {
+    const [dashIp] = await dns.promises.resolve4("fasih-dashboard.bps.go.id");
+    const [ssoIp] = await dns.promises.resolve4("sso.bps.go.id");
+    if (dashIp && ssoIp) {
+      args.push(`--host-resolver-rules=MAP fasih-dashboard.bps.go.id ${dashIp}, MAP sso.bps.go.id ${ssoIp}`);
+    }
+  } catch {}
   return args;
 }
 
@@ -66,18 +76,23 @@ async function getAuthTokens() {
 
   if (existsSync(COOKIES_PATH) && existsSync(STORAGE_PATH)) {
     try {
-      const cookies = JSON.parse(readFileSync(COOKIES_PATH, "utf-8"));
       const chromePath = platform() === "win32" ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" : "/usr/bin/google-chrome-stable";
       const args = await getChromeArgs();
       const browser = await chromium.launch({ headless: true, executablePath: chromePath, args });
       const context = await browser.newContext({ ...contextOptions, storageState: STORAGE_PATH });
       const page = await context.newPage();
       try {
-        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "commit", timeout: 45000 });
-        await page.waitForSelector("#csrf_token", { state: "attached", timeout: 15000 }).catch(() => {});
+        await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 30000 });
         if (!page.url().includes("/login/")) {
           const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
-          if (csrfToken) return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
+          if (csrfToken) {
+            const freshCookies = await context.cookies();
+            const freshStorage = await context.storageState();
+            writeFileSync(COOKIES_PATH, JSON.stringify(freshCookies, null, 2));
+            writeFileSync(STORAGE_PATH, JSON.stringify(freshStorage, null, 2));
+            writeFileSync(CSRF_PATH, csrfToken);
+            return { cookieStr: freshCookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
+          }
         }
       } finally { await browser.close(); }
     } catch (e) {
@@ -105,14 +120,14 @@ async function getAuthTokens() {
       await page.fill("#password", PASSWORD);
       await page.click("#kc-login");
       await page.waitForURL(url => url.hostname.includes("fasih-dashboard.bps.go.id"), { timeout: 30000, waitUntil: "commit" });
-      await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "commit", timeout: 45000 });
-      await page.waitForSelector("#csrf_token", { state: "attached", timeout: 20000 });
+      await page.goto(`${BASE_URL}/superset/sqllab/`, { waitUntil: "domcontentloaded", timeout: 45000 });
       const csrfToken = await page.evaluate(() => document.getElementById("csrf_token")?.value);
       if (!csrfToken) throw new Error("Failed to extract CSRF token after login.");
       const cookies = await context.cookies();
       mkdirSync(resolve(__dirname, "..", "cookies"), { recursive: true });
       writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
       writeFileSync(STORAGE_PATH, JSON.stringify(await context.storageState(), null, 2));
+      writeFileSync(CSRF_PATH, csrfToken);
       return { cookieStr: cookies.map(c => `${c.name}=${c.value}`).join('; '), csrfToken };
     } catch (err) {
       lastErr = err;
@@ -126,6 +141,11 @@ async function getAuthTokens() {
 
 
 async function runSingleQuery(sql, cookieStr, csrfToken) {
+  if (!canExecuteQuery(1)) {
+    console.error("🛑 [QUOTA GUARD] Batas kuota harian kueri BPS SQL Lab tercapai! Mencegah eksekusi kueri.");
+    return [];
+  }
+
   const payload = {
     client_id: Math.random().toString(36).substring(2, 12),
     database_id: 25,
@@ -158,10 +178,13 @@ async function runSingleQuery(sql, cookieStr, csrfToken) {
     clearTimeout(timeoutId);
     const json = await res.json();
     if (json.errors) console.error("SQL Lab Error Response:", json.errors);
-    return json.data || [];
+    const data = json.data || [];
+    recordQueryExecution(sql.slice(0, 100), data.length, !json.errors);
+    return data;
   } catch (err) {
     clearTimeout(timeoutId);
     console.error("Fetch SQL Lab error/timeout:", err.message);
+    recordQueryExecution(sql.slice(0, 100), 0, false);
     return [];
   }
 }
@@ -222,7 +245,154 @@ async function fetchMempawahProgressData(cookieStr, csrfToken) {
   }
 
   console.log(`✅ Berhasil menarik total ${allRows.length} baris progres Mempawah dalam ${Date.now() - startMs} ms!`);
+
+  if (allRows.length > 0) {
+    try {
+      const backupPath = resolve(__dirname, "..", "results", "progress-sqllab-mempawah.json");
+      writeFileSync(backupPath, JSON.stringify(allRows, null, 2), "utf-8");
+      console.log(`📁 Backup data tersimpan di: ${backupPath}`);
+    } catch (err) {
+      console.warn("⚠️ Gagal menyimpan backup JSON lokal:", err.message);
+    }
+  }
+
   return allRows;
+}
+
+async function fetchAssignmentRegionData(cookieStr, csrfToken) {
+  console.log("\n⚡ Menjalankan Query Assignment Region (Done Listing) di SQL Lab...");
+  const startMs = Date.now();
+
+  const sql = `
+    SELECT 
+      level_6_full_code, 
+      done_listing 
+    FROM tgr_fd68e454.base_table_assignment_region 
+    ORDER BY level_6_full_code ASC
+  `;
+
+  let allRows = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const cleanSql = sql.trim().replace(/;+$/, '');
+    const chunkSql = `${cleanSql} LIMIT 1000 OFFSET ${offset};`;
+    const rows = await runSingleQuery(chunkSql, cookieStr, csrfToken);
+    console.log(` -> Offset ${offset}: ditarik ${rows.length} baris assignment_region`);
+    allRows.push(...rows);
+    if (rows.length < 1000) {
+      hasMore = false;
+    } else {
+      offset += 1000;
+    }
+  }
+
+  console.log(`✅ Berhasil menarik total ${allRows.length} baris assignment_region dalam ${Date.now() - startMs} ms!`);
+
+  if (allRows.length > 0) {
+    try {
+      const backupPath = resolve(__dirname, "..", "results", "done-listing-sqllab.json");
+      writeFileSync(backupPath, JSON.stringify(allRows, null, 2), "utf-8");
+      console.log(`📁 Backup data tersimpan di: ${backupPath}`);
+    } catch (err) {
+      console.warn("⚠️ Gagal menyimpan backup JSON lokal:", err.message);
+    }
+  }
+
+  return allRows;
+}
+
+async function syncDoneListingToGoogleSheets(sheets, regionRows) {
+  console.log(`\n=== SINKRONISASI DONE LISTING KE GOOGLE SHEETS TAB '${LISTING_TAB_NAME}' ===`);
+  if (!regionRows || regionRows.length === 0) {
+    console.warn("⚠️ Tidak ada data assignment_region yang ditarik. Melewati sinkronisasi Done Listing.");
+    return;
+  }
+
+  console.log(`→ Memeriksa keberadaan tab '${LISTING_TAB_NAME}' di Google Sheets...`);
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  let targetSheet = meta.data.sheets.find(s => s.properties.title === LISTING_TAB_NAME);
+
+  if (!targetSheet) {
+    console.log(`  → Membuat tab baru '${LISTING_TAB_NAME}'...`);
+    const addResp = await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: LISTING_TAB_NAME,
+                gridProperties: {
+                  rowCount: Math.max(100, regionRows.length + 50),
+                  columnCount: 5,
+                  frozenRowCount: 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    });
+    targetSheet = addResp.data.replies[0].addSheet;
+  }
+
+  const headers = ["level_6_full_code", "done_listing"];
+  const formattedRows = regionRows.map(item => [
+    "'" + (item.level_6_full_code || ""),
+    item.done_listing !== null && item.done_listing !== undefined ? Number(item.done_listing) : 0
+  ]);
+
+  console.log(`→ Membersihkan lembar kerja '${LISTING_TAB_NAME}' Range A1:B...`);
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${LISTING_TAB_NAME}!A1:B`,
+  });
+
+  console.log(`→ Mengunggah ${formattedRows.length} baris data ke tab '${LISTING_TAB_NAME}'...`);
+  const allData = [headers, ...formattedRows];
+  const chunkSize = 5000;
+  for (let i = 0; i < allData.length; i += chunkSize) {
+    const chunk = allData.slice(i, i + chunkSize);
+    const startRow = i + 1;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${LISTING_TAB_NAME}!A${startRow}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: chunk },
+    });
+  }
+
+  try {
+    const targetGridRows = Math.max(100, allData.length + 50);
+    const currentGridRows = targetSheet?.properties?.gridProperties?.rowCount;
+    if (currentGridRows && currentGridRows !== targetGridRows) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        requestBody: {
+          requests: [
+            {
+              updateSheetProperties: {
+                properties: {
+                  sheetId: targetSheet.properties.sheetId,
+                  gridProperties: {
+                    rowCount: targetGridRows,
+                    columnCount: 5
+                  }
+                },
+                fields: "gridProperties(rowCount,columnCount)"
+              }
+            }
+          ]
+        }
+      });
+    }
+  } catch (gridErr) {
+    console.warn("⚠️ Gagal merapikan grid:", gridErr.message);
+  }
+
+  console.log(`🎉 Berhasil memperbarui ${formattedRows.length} baris di tab '${LISTING_TAB_NAME}'!`);
 }
 
 export async function syncProgressFromSqlLab() {
@@ -256,9 +426,10 @@ export async function syncProgressFromSqlLab() {
   });
   console.log(`📌 Data Non-Mempawah yang dipertahankan 100% utuh: ${nonMempawahRows.length} baris`);
 
-  // 2. Tarik data baru Mempawah dari SQL Lab
+  // 2. Tarik data baru Mempawah & Assignment Region dari SQL Lab
   const { cookieStr, csrfToken } = await getAuthTokens();
   const freshMempawahRaw = await fetchMempawahProgressData(cookieStr, csrfToken);
+  const regionRows = await fetchAssignmentRegionData(cookieStr, csrfToken);
 
   if (freshMempawahRaw.length === 0) {
     console.warn("⚠️ Tidak ada data progres Mempawah yang ditarik dari SQL Lab. Operasi dibatalkan.");
@@ -381,6 +552,9 @@ export async function syncProgressFromSqlLab() {
   }
 
   console.log(`🎉 SINKRONISASI DETERMINISTIK BERHASIL! Total ${mergedBodyRows.length} baris berhasil diperbarui di Google Sheets Tab "6100"!`);
+
+  // 7. Sinkronkan Done Listing ke tab baru
+  await syncDoneListingToGoogleSheets(sheets, regionRows);
 
   try {
     const statusPath = resolve(__dirname, "..", "results", "sync-status-se2026.json");

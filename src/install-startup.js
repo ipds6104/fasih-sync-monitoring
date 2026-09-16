@@ -15,29 +15,24 @@ console.log('================================================================');
 console.log('🚀 MEMASANG AUTOSTART ROBUST FASIH SYNC MONITORING (WINDOWS)');
 console.log('================================================================\n');
 
-// 1. Buat batch script utama
+// 1. Buat batch script utama (Watchdog Loop Mandiri - Anti Macet di Windows)
 const batFile = path.join(projectDir, 'autostart.bat');
-const logFile = path.join(projectDir, 'results', 'autostart.log');
+const runnerLog = path.join(projectDir, 'results', 'scheduler_runner.log');
 const batContent = `@echo off
-echo ============================================================== >> "${logFile}"
-echo [%date% %time%] [Autostart] Starting Fasih Sync robust boot... >> "${logFile}"
-
-REM 1. Pastikan Docker SurrealDB Container aktif
-docker start surrealdb >> "${logFile}" 2>&1
-
-REM 2. Navigasi ke root project
+setlocal
 cd /d "${projectDir}"
 
-REM 3. Bersihkan stale lockfile jika ada
-if exist "scheduler.lock" (
-  del /f /q "scheduler.lock" >> "${logFile}" 2>&1
-)
+REM 1. Pastikan Docker SurrealDB Container aktif
+docker start surrealdb >nul 2>&1
 
-REM 4. Jalankan PM2 Scheduler & Simpan status
-call npx pm2 start src/scheduler.js --name "fasih-sync-scheduler" >> "${logFile}" 2>&1
-call npx pm2 save >> "${logFile}" 2>&1
-
-echo [%date% %time%] [Autostart] Startup sequence completed. >> "${logFile}"
+REM 2. Loop Watchdog Mandiri: Jalankan scheduler dan auto-restart jika berhenti
+:loop
+echo ============================================================== >> "${runnerLog}"
+echo [%date% %time%] [Runner] Starting Fasih Sync Scheduler... >> "${runnerLog}"
+node src\\scheduler.js >> "${runnerLog}" 2>&1
+echo [%date% %time%] [Runner] Scheduler stopped. Auto-restarting in 10 seconds... >> "${runnerLog}"
+ping 127.0.0.1 -n 11 >nul
+goto loop
 `;
 
 fs.writeFileSync(batFile, batContent, 'utf-8');

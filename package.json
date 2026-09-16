@@ -12,11 +12,15 @@
     "sync-se2026": "node src/index.js sync-se2026",
     "sync-sqllab": "node src/sync-progress-sqllab.js",
     "sync-surreal": "node src/sync-surreal-sqllab.js",
+    "sync-store-surreal": "node src/sync-store-to-surrealdb.js",
     "query-surreal": "node src/query-surreal.js",
     "pull-petugas": "node src/pull-progress-petugas.js",
     "query": "node src/execute-query.js",
     "import-cookies": "node src/import-cookies.js",
-    "install-startup": "node src/install-startup.js"
+    "install-startup": "node src/install-startup.js",
+    "check-consistency": "node src/check-consistency.js",
+    "reconcile-surreal": "node src/reconcile-surreal-status.js",
+    "sync-dtsen": "node src/sync-dtsen-var.js"
   },
   "keywords": [],
   "author": "",

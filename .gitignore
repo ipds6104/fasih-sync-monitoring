@@ -58,7 +58,11 @@ GEMINI.md
 src/index.js.original
 backups/
 
-# ── Runtime locks & Scratch files ─────────────────────────────────────────────
-scheduler.lock
+# ── Runtime locks, Logs, & Scratch files ─────────────────────────────────────
+*.lock
+*.log
+*.tmp
+*.tmp.json
+autostart.vbs
 scratch/
 src/test-inspect-*.js

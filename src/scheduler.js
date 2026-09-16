@@ -248,7 +248,7 @@ if (ENABLE_CRON_SQLLAB) {
       if (lastSqlLabFailed) {
         sendDiscordAlert(
           "✅ Sync SQL Lab SE2026 Pulih Kembali",
-          `Sinkronisasi progres SLS Mempawah (Tab 6100) via SQL Lab kembali berjalan dengan sukses.\n\nWaktu Pemulihan: **${startTime}**`,
+          `Sinkronisasi progres SLS Mempawah (Tab 6100 & Done Listing) via SQL Lab kembali berjalan dengan sukses.\n\nWaktu Pemulihan: **${startTime}**`,
           false
         );
         lastSqlLabFailed = false;
@@ -257,7 +257,7 @@ if (ENABLE_CRON_SQLLAB) {
       logMsg(`[Scheduler] ⚠ Sinkronisasi SQL Lab gagal: ${err.message}`);
       lastSqlLabFailed = true;
       sendDiscordAlert(
-        "❌ Sync SQL Lab SE2026 (Tab 6100) GAGAL",
+        "❌ Sync SQL Lab SE2026 (Tab 6100 & Done Listing) GAGAL",
         `Job sync-sqllab gagal dijalankan pada **${startTime}**.\n\nDetail Error:\n\`\`\`\n${err.message}\n\`\`\`\n\nSilakan cek koneksi VPN BPS atau status database StarRocks.`
       );
     }

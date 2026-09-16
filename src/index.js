@@ -12,6 +12,7 @@ import { syncDashboardSE2026 } from "./sync-dashboard-se2026.js";
 import { syncProgressFromSqlLab } from "./sync-progress-sqllab.js";
 import { runPullProgressPetugas } from "./pull-progress-petugas.js";
 import { syncSurrealSqllab } from "./sync-surreal-sqllab.js";
+import { syncNestedDtsenVar } from "./sync-dtsen-var.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -1397,11 +1398,13 @@ if (cmd === "login") {
   syncDashboardSE2026().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-surreal" || cmd === "surreal-sync") {
   syncSurrealSqllab().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-dtsen") {
+  syncNestedDtsenVar().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "pull-petugas") {
   runPullProgressPetugas().catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-sqllab|sync-surreal|pull-petugas]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-sqllab|sync-surreal|sync-dtsen|pull-petugas]");
   process.exit(1);
 }
 

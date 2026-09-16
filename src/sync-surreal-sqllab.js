@@ -1,10 +1,12 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, createReadStream, createWriteStream, renameSync } from "fs";
+import { execSync } from "child_process";
 import readline from "readline";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { config } from "dotenv";
 import ExcelJS from "exceljs";
 import { loadCachedSession, refreshSessionViaBrowser, executeQuery } from "./execute-query.js";
+import { canExecuteQuery, getDailyQuotaStatus } from "./quota-tracker.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -18,6 +20,40 @@ const SURREAL_LOCK_FILE = resolve(__dirname, "..", "surreal_sync.lock");
 
 const ensureDir = (fp) => mkdirSync(dirname(fp), { recursive: true });
 
+function isProcessAlive(pid) {
+  if (!pid || isNaN(pid)) return false;
+  try {
+    if (process.platform === "win32") {
+      const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+      return out && out.toLowerCase().includes("node.exe");
+    } else {
+      process.kill(pid, 0);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
+function checkAndCleanLock(lockFilePath) {
+  if (!existsSync(lockFilePath)) return false;
+  try {
+    const oldPidStr = readFileSync(lockFilePath, "utf-8").trim();
+    const oldPid = parseInt(oldPidStr, 10);
+    if (!isNaN(oldPid) && oldPid !== process.pid && isProcessAlive(oldPid)) {
+      return true;
+    }
+    try { unlinkSync(lockFilePath); } catch {}
+    return false;
+  } catch {
+    try { unlinkSync(lockFilePath); } catch {}
+    return false;
+  }
+}
+
 /**
  * Memuat skema 100% kolom utuh per tabel (Zero-Pruning) dari Excel Metadata Resmi
  */
@@ -29,16 +65,32 @@ export async function loadSchemaFromXlsx(xlsxPath = KAMUS_XLSX_PATH) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(xlsxPath);
 
+  const sheetNameMap = {
+    "base_table_assignm": "base_table_assignment",
+    "base_table_assig_1": "base_table_assignment_history",
+    "base_table_assig_2": "base_table_assignment_responsibility",
+    "base_table_paradat": "base_table_paradata",
+    "base_table_user_al": "base_table_user_allocation",
+    "base_table_user__1": "base_table_user_allocation_new",
+  };
+
   const tableCols = {
     base_table_assignment: [],
     root_table: [],
-    se2026_nested: []
+    se2026_nested: [],
+    nested_dtsen_var: [],
+    nested_dtsen: [],
+    nested_meteran: [],
+    kp_nested: []
   };
 
-  const targetTables = ["base_table_assignment", "root_table", "se2026_nested"];
+  const targetTables = Object.keys(tableCols);
 
   wb.worksheets.forEach(ws => {
-    const cleanTbl = ws.name.replace("tgr_fd68e454.", "").trim();
+    let cleanTbl = ws.name.replace("tgr_fd68e454.", "").trim();
+    if (sheetNameMap[cleanTbl]) {
+      cleanTbl = sheetNameMap[cleanTbl];
+    }
     if (targetTables.includes(cleanTbl)) {
       const cols = [];
       ws.eachRow((row, rowNum) => {
@@ -75,21 +127,16 @@ async function runQueryWithAutoSession(sql, queryLimit = 9000) {
 
   let res = await executeQuery(sql, currentSession.cookieStr, currentSession.csrfToken, queryLimit);
 
-  const checkNeedRelogin = async (response) => {
+  const checkNeedRelogin = (response) => {
+    if (!response) return false;
     if (response.status === 401 || response.status === 403) return true;
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("text/html")) return true;
-    try {
-      const cloned = response.clone();
-      const text = await cloned.text();
-      if (text.includes("<!DOCTYPE") || text.includes("kc-login") || text.includes("BPS SSO") || text.includes("CSRF token is missing") || text.includes("CSRF")) {
-        return true;
-      }
-    } catch {}
+    if (!response.ok && !contentType.includes("json")) return true;
     return false;
   };
 
-  if (await checkNeedRelogin(res)) {
+  if (checkNeedRelogin(res)) {
     console.warn("⚠️ Sesi kedaluwarsa atau terpengaruh redirect login. Melakukan re-login...");
     currentSession = await refreshSessionViaBrowser();
     res = await executeQuery(sql, currentSession.cookieStr, currentSession.csrfToken, queryLimit);
@@ -113,21 +160,27 @@ async function runQueryWithAutoSession(sql, queryLimit = 9000) {
 /**
  * Membangun array SQL Multi-Block CONCAT JSON yang dioptimalkan untuk batas parser Superset BPS
  * maxBlocksPerQuery diset ke 4 (100 kolom per kueri) agar tidak memicu "SQL Syntax is too large"
+ * extraIdCols: kolom identitas tambahan seperti index1 untuk tabel roster/nested
  */
-export function buildMultiBlockConcatSql(tableName, columns, filterWhereClause, blockColsSize = 25, maxBlocksPerQuery = 4, tableAlias = "", fromClauseOverride = "") {
+export function buildMultiBlockConcatSql(tableName, columns, filterWhereClause, blockColsSize = 25, maxBlocksPerQuery = 4, tableAlias = "", fromClauseOverride = "", extraIdCols = []) {
   const statements = [];
-  const totalCols = columns.length;
   const colPrefix = tableAlias ? `${tableAlias}.` : "";
-  const idCol = tableAlias ? `${tableAlias}.assignment_id` : "assignment_id";
+  const idCols = [
+    tableAlias ? `${tableAlias}.assignment_id` : "assignment_id",
+    ...extraIdCols.map(c => (tableAlias ? `${tableAlias}.${c}` : c))
+  ];
+
+  const substantiveCols = columns.filter(c => !extraIdCols.includes(c));
+  const totalCols = substantiveCols.length;
 
   const blocks = [];
   for (let i = 0; i < totalCols; i += blockColsSize) {
-    blocks.push(columns.slice(i, i + blockColsSize));
+    blocks.push(substantiveCols.slice(i, i + blockColsSize));
   }
 
   for (let qIdx = 0; qIdx < blocks.length; qIdx += maxBlocksPerQuery) {
     const queryBlocks = blocks.slice(qIdx, qIdx + maxBlocksPerQuery);
-    const selectExprs = [idCol];
+    const selectExprs = [...idCols];
 
     for (let bIdx = 0; bIdx < queryBlocks.length; bIdx++) {
       const block = queryBlocks[bIdx];
@@ -165,7 +218,7 @@ function toCsvRow(values) {
  */
 export const syncSurrealSqllab = runSurrealSync;
 export async function runSurrealSync(limit = 1000) {
-  if (existsSync(SURREAL_LOCK_FILE)) {
+  if (checkAndCleanLock(SURREAL_LOCK_FILE)) {
     console.warn("⚠️ Sinkronisasi SurrealDB sedang berjalan oleh proses lain. Membatalkan eksekusi paralel.");
     return { success: false, reason: "LOCKED" };
   }
@@ -205,205 +258,257 @@ async function runSurrealDeltaSyncInternal() {
   const lastSyncTime = state.last_sync_timestamp || "2026-08-16 00:00:00.000";
   console.log(`📌 Checkpoint Terakhir: ${lastSyncTime}`);
 
-  console.log(`\n🔍 [Step 1/3] Memeriksa assignment yang termodifikasi di base_table_assignment...`);
-  const sqlDeltaBase = `
-    SELECT 
-      assignment_id,
-      assignment_status_alias,
-      assignment_date_modified,
-      is_active,
-      code_identity,
-      level_1_full_code,
-      level_2_full_code,
-      level_2_name,
-      level_3_name,
-      level_4_name,
-      level_5_full_code,
-      level_6_full_code,
-      level_6_name,
-      current_user_username,
-      current_user_survey_role_name
-    FROM base_table_assignment
-    WHERE level_2_full_code = '6104'
-      AND is_active = 1
-      AND assignment_date_modified > '${lastSyncTime}'
-    ORDER BY assignment_date_modified ASC
-    LIMIT 9000;
-  `;
-
-  const deltaBaseRows = await runQueryWithAutoSession(sqlDeltaBase);
-  console.log(`   ✓ Ditemukan ${deltaBaseRows.length} assignment yang mengalami modifikasi sejak checkpoint.`);
-
-  if (deltaBaseRows.length === 0) {
-    console.log("🎉 [DELTA SYNC SELESAI] Tidak ada data baru. Store lokal sudah mutakhir 100%.\n");
-    return { success: true, mode: "DELTA", updatedCount: 0 };
-  }
-
-  const deltaStore = {};
-  let newMaxModDate = lastSyncTime;
-  for (const r of deltaBaseRows) {
-    const aid = r.assignment_id;
-    deltaStore[aid] = { ...r };
-    if (r.assignment_date_modified && r.assignment_date_modified > newMaxModDate) {
-      newMaxModDate = r.assignment_date_modified;
-    }
-  }
-
+  let currentCheckpoint = lastSyncTime;
+  let totalAllMerged = 0;
+  let hasMore = true;
+  let batchNum = 1;
   const schema = await loadSchemaFromXlsx();
 
-  // Step 2: Extract root_table via Direct JOIN (Hanya 1-2 kueri total, tanpa loop batch!)
-  console.log(`\n🏠 [Step 2/3] Menarik kolom root_table untuk ${deltaBaseRows.length} delta assignment via Direct JOIN...`);
-  const rootFrom = `root_table r JOIN base_table_assignment b ON r.assignment_id = b.assignment_id`;
-  const rootWhere = `b.level_2_full_code = '6104' AND b.is_active = 1 AND b.assignment_date_modified > '${lastSyncTime}' ORDER BY b.assignment_date_modified ASC LIMIT ${deltaBaseRows.length}`;
-  const rootStmts = buildMultiBlockConcatSql("root_table", schema.root_table, rootWhere, 25, 4, "r", rootFrom);
+  while (hasMore) {
+    if (!canExecuteQuery(8)) {
+      console.warn("🛑 [QUOTA SAFETY] Kuota harian mendekati batas aman. Menunda sisa batch delta ke siklus berikutnya.");
+      break;
+    }
 
-  for (let sIdx = 0; sIdx < rootStmts.length; sIdx++) {
-    console.log(`   -> [root_table] Menjalankan kueri blok ${sIdx + 1}/${rootStmts.length}...`);
-    const rows = await runQueryWithAutoSession(rootStmts[sIdx]);
-    for (const r of rows) {
+    console.log(`\n🔍 [Batch ${batchNum}] Memeriksa assignment termodifikasi sejak checkpoint (${currentCheckpoint})...`);
+    const sqlDeltaBase = `
+      SELECT 
+        assignment_id,
+        assignment_status_alias,
+        assignment_date_modified,
+        is_active,
+        code_identity,
+        level_1_full_code,
+        level_2_full_code,
+        level_2_name,
+        level_3_name,
+        level_4_name,
+        level_5_full_code,
+        level_6_full_code,
+        level_6_name,
+        current_user_username,
+        current_user_survey_role_name
+      FROM base_table_assignment
+      WHERE level_2_full_code = '6104'
+        AND assignment_date_modified > '${currentCheckpoint}'
+      ORDER BY assignment_date_modified ASC
+      LIMIT 9000;
+    `;
+
+    const deltaBaseRows = await runQueryWithAutoSession(sqlDeltaBase);
+    console.log(`   ✓ Ditemukan ${deltaBaseRows.length} assignment yang mengalami modifikasi.`);
+
+    if (deltaBaseRows.length === 0) {
+      if (batchNum === 1) {
+        console.log("ℹ️ Tidak ada modifikasi baru pada tabel induk assignment.");
+      }
+      break;
+    }
+
+    const deltaStore = {};
+    let newMaxModDate = currentCheckpoint;
+    for (const r of deltaBaseRows) {
       const aid = r.assignment_id;
-      if (deltaStore[aid]) {
-        for (const [k, v] of Object.entries(r)) {
-          if (k.startsWith("block_") && v) {
-            try {
-              const bDict = JSON.parse(v);
-              for (const [bk, bv] of Object.entries(bDict)) {
-                deltaStore[aid][`root_${bk}`] = bv;
-              }
-            } catch (e) {}
-          }
-        }
+      deltaStore[aid] = { ...r };
+      if (r.assignment_date_modified && r.assignment_date_modified > newMaxModDate) {
+        newMaxModDate = r.assignment_date_modified;
       }
     }
-  }
 
-  // Step 3: Extract se2026_nested via Direct JOIN (Hanya 4-5 kueri total, tanpa loop batch!)
-  console.log(`\n🏢 [Step 3/3] Menarik kolom se2026_nested untuk ${deltaBaseRows.length} delta assignment via Direct JOIN...`);
-  const seFrom = `se2026_nested n JOIN base_table_assignment b ON n.assignment_id = b.assignment_id`;
-  const seWhere = `b.level_2_full_code = '6104' AND b.is_active = 1 AND b.assignment_date_modified > '${lastSyncTime}' ORDER BY b.assignment_date_modified ASC LIMIT ${deltaBaseRows.length}`;
-  const seStmts = buildMultiBlockConcatSql("se2026_nested", schema.se2026_nested, seWhere, 25, 4, "n", seFrom);
+    // Step 2: Extract root_table via Direct JOIN (Hanya 1-2 kueri total, tanpa loop batch!)
+    console.log(`\n🏠 [Step 2/3] Menarik kolom root_table untuk ${deltaBaseRows.length} delta assignment (Batch ${batchNum})...`);
+    const rootFrom = `root_table r JOIN base_table_assignment b ON r.assignment_id = b.assignment_id`;
+    const rootWhere = `b.level_2_full_code = '6104' AND b.is_active = 1 AND b.assignment_date_modified > '${currentCheckpoint}' ORDER BY b.assignment_date_modified ASC LIMIT ${deltaBaseRows.length}`;
+    const rootStmts = buildMultiBlockConcatSql("root_table", schema.root_table, rootWhere, 25, 4, "r", rootFrom);
 
-  for (let sIdx = 0; sIdx < seStmts.length; sIdx++) {
-    console.log(`   -> [se2026_nested] Menjalankan kueri blok ${sIdx + 1}/${seStmts.length}...`);
-    const rows = await runQueryWithAutoSession(seStmts[sIdx]);
-    for (const r of rows) {
-      const aid = r.assignment_id;
-      if (deltaStore[aid]) {
-        for (const [k, v] of Object.entries(r)) {
-          if (k.startsWith("block_") && v) {
-            try {
-              const bDict = JSON.parse(v);
-              for (const [bk, bv] of Object.entries(bDict)) {
-                deltaStore[aid][`se2026_${bk}`] = bv;
-              }
-            } catch (e) {}
-          }
-        }
-      }
-    }
-  }
-
-  // Step 4: Streaming merge into JSON Document Store
-  console.log(`\n💾 [Merge] Menggabungkan pembaruan delta ke JSON Document Store...`);
-  const deltaListForSurreal = Object.values(deltaStore).map(d => ({ ...d }));
-  const TEMP_JSON = OUT_JSON + ".tmp";
-  const inStream = createReadStream(OUT_JSON, { encoding: "utf-8" });
-  const outStream = createWriteStream(TEMP_JSON, { encoding: "utf-8" });
-
-  const rl = readline.createInterface({ input: inStream, crlfDelay: Infinity });
-  let mergedCount = 0;
-  let totalDocCount = 0;
-
-  for await (const line of rl) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("{") && trimmed.includes("assignment_id")) {
-      totalDocCount++;
-      const isComma = trimmed.endsWith(",");
-      const cleanJsonStr = isComma ? trimmed.slice(0, -1) : trimmed;
-      try {
-        const doc = JSON.parse(cleanJsonStr);
-        const aid = doc.assignment_id;
+    for (let sIdx = 0; sIdx < rootStmts.length; sIdx++) {
+      console.log(`   -> [root_table] Menjalankan kueri blok ${sIdx + 1}/${rootStmts.length}...`);
+      const rows = await runQueryWithAutoSession(rootStmts[sIdx]);
+      for (const r of rows) {
+        const aid = r.assignment_id;
         if (deltaStore[aid]) {
-          const delta = deltaStore[aid];
-          const prevStatus = doc.assignment_status_alias;
-          const newStatus = delta.assignment_status_alias;
-          const modTime = delta.assignment_date_modified || "";
-
-          let audit = [];
-          try {
-            audit = JSON.parse(doc.audit_history_json || "[]");
-          } catch {}
-          if (prevStatus !== newStatus) {
-            audit.push({ from_status: prevStatus, to_status: newStatus, changed_at: modTime });
+          for (const [k, v] of Object.entries(r)) {
+            if (k.startsWith("block_") && v) {
+              try {
+                const bDict = JSON.parse(v);
+                for (const [bk, bv] of Object.entries(bDict)) {
+                  deltaStore[aid][`root_${bk}`] = bv;
+                }
+              } catch (e) {}
+            }
           }
-          delta.audit_history_json = JSON.stringify(audit);
-
-          Object.assign(doc, delta);
-          mergedCount++;
-          outStream.write(`    ${JSON.stringify(doc)}${isComma ? "," : ""}\n`);
-          delete deltaStore[aid];
-          continue;
         }
-      } catch (e) {}
-    }
-    outStream.write(line + "\n");
-  }
-
-  // Brand-new assignments in delta
-  for (const [aid, delta] of Object.entries(deltaStore)) {
-    delta.id = `assignment:${aid.replace(/-/g, "_")}`;
-    delta.audit_history_json = JSON.stringify([
-      { from_status: "INITIAL", to_status: delta.assignment_status_alias || "", changed_at: delta.assignment_date_modified || "" }
-    ]);
-    outStream.write(`    ,${JSON.stringify(delta)}\n`);
-    mergedCount++;
-    totalDocCount++;
-  }
-
-  outStream.end();
-  renameSync(TEMP_JSON, OUT_JSON);
-  console.log(`   ✓ Sukses streaming merge JSON! (${mergedCount} record terupdate)`);
-
-  // Live Upsert ke SurrealDB Instance lokal jika aktif (100% Idempotent)
-  try {
-    const deltaList = deltaListForSurreal;
-    if (deltaList.length > 0) {
-      for (let i = 0; i < deltaList.length; i += 25) {
-        const chunk = deltaList.slice(i, i + 25);
-        const stmts = chunk.map(doc => {
-          const rawId = (doc.id || "").replace(/^assignment:/, "") || doc.assignment_id.replace(/-/g, "_");
-          return `UPSERT assignment:${rawId} MERGE ${JSON.stringify(doc)};`;
-        }).join("\n");
-
-        await fetch("http://127.0.0.1:8900/sql", {
-          method: "POST",
-          headers: {
-            "Accept": "application/json",
-            "NS": "bps_mempawah",
-            "DB": "se2026",
-            "surreal-ns": "bps_mempawah",
-            "surreal-db": "se2026",
-            "Authorization": "Basic " + Buffer.from("root:root").toString("base64")
-          },
-          body: `USE NS bps_mempawah; USE DB se2026;\n${stmts}`
-        }).catch(() => {});
       }
-      console.log(`   ✓ Live instance SurrealDB diperbarui secara idempotent dengan ${deltaList.length} record delta.`);
     }
-  } catch {}
 
-  // Update State
-  ensureDir(STATE_FILE);
-  writeFileSync(STATE_FILE, JSON.stringify({
-    last_sync_timestamp: newMaxModDate,
-    total_records: totalDocCount,
-    last_run_mode: "DELTA",
-    last_merged_count: mergedCount,
-    updated_at: new Date().toISOString()
-  }, null, 2), "utf-8");
+    // Step 3: Extract se2026_nested via Direct JOIN (Hanya 4-5 kueri total, tanpa loop batch!)
+    console.log(`\n🏢 [Step 3/3] Menarik kolom se2026_nested untuk ${deltaBaseRows.length} delta assignment (Batch ${batchNum})...`);
+    const seFrom = `se2026_nested n JOIN base_table_assignment b ON n.assignment_id = b.assignment_id`;
+    const seWhere = `b.level_2_full_code = '6104' AND b.is_active = 1 AND b.assignment_date_modified > '${currentCheckpoint}' ORDER BY b.assignment_date_modified ASC LIMIT ${deltaBaseRows.length}`;
+    const seStmts = buildMultiBlockConcatSql("se2026_nested", schema.se2026_nested, seWhere, 25, 4, "n", seFrom);
 
-  console.log(`\n🎉 [DELTA SYNC SUCCESS] Store diperbarui dengan ${mergedCount} record terbaru (Checkpoint: ${newMaxModDate})\n`);
-  return { success: true, mode: "DELTA", updatedCount: mergedCount, checkpoint: newMaxModDate };
+    for (let sIdx = 0; sIdx < seStmts.length; sIdx++) {
+      console.log(`   -> [se2026_nested] Menjalankan kueri blok ${sIdx + 1}/${seStmts.length}...`);
+      const rows = await runQueryWithAutoSession(seStmts[sIdx]);
+      for (const r of rows) {
+        const aid = r.assignment_id;
+        if (deltaStore[aid]) {
+          for (const [k, v] of Object.entries(r)) {
+            if (k.startsWith("block_") && v) {
+              try {
+                const bDict = JSON.parse(v);
+                for (const [bk, bv] of Object.entries(bDict)) {
+                  deltaStore[aid][`se2026_${bk}`] = bv;
+                }
+              } catch (e) {}
+            }
+          }
+        }
+      }
+    }
+
+    // Step 4: Streaming merge into JSON Document Store
+    console.log(`\n💾 [Merge] Menggabungkan pembaruan delta ke JSON Document Store...`);
+    const deltaListForSurreal = Object.values(deltaStore).map(d => ({ ...d }));
+    const TEMP_JSON = OUT_JSON + ".tmp";
+    const inStream = createReadStream(OUT_JSON, { encoding: "utf-8" });
+    const outStream = createWriteStream(TEMP_JSON, { encoding: "utf-8" });
+
+    const rl = readline.createInterface({ input: inStream, crlfDelay: Infinity });
+    let mergedCount = 0;
+    let totalDocCount = 0;
+
+    for await (const line of rl) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("{") && trimmed.includes("assignment_id")) {
+        totalDocCount++;
+        const isComma = trimmed.endsWith(",");
+        const cleanJsonStr = isComma ? trimmed.slice(0, -1) : trimmed;
+        try {
+          const doc = JSON.parse(cleanJsonStr);
+          const aid = doc.assignment_id;
+          if (deltaStore[aid]) {
+            const delta = deltaStore[aid];
+            const prevStatus = doc.assignment_status_alias;
+            const newStatus = delta.assignment_status_alias;
+            const modTime = delta.assignment_date_modified || "";
+
+            let audit = [];
+            try {
+              audit = JSON.parse(doc.audit_history_json || "[]");
+            } catch {}
+            if (prevStatus !== newStatus) {
+              audit.push({ from_status: prevStatus, to_status: newStatus, changed_at: modTime });
+            }
+            delta.audit_history_json = JSON.stringify(audit);
+
+            Object.assign(doc, delta);
+            mergedCount++;
+            outStream.write(`    ${JSON.stringify(doc)}${isComma ? "," : ""}\n`);
+            delete deltaStore[aid];
+            continue;
+          }
+        } catch (e) {}
+      }
+      outStream.write(line + "\n");
+    }
+
+    // Brand-new assignments in delta
+    for (const [aid, delta] of Object.entries(deltaStore)) {
+      delta.id = `assignment:${aid.replace(/-/g, "_")}`;
+      delta.audit_history_json = JSON.stringify([
+        { from_status: "INITIAL", to_status: delta.assignment_status_alias || "", changed_at: delta.assignment_date_modified || "" }
+      ]);
+      outStream.write(`    ,${JSON.stringify(delta)}\n`);
+      mergedCount++;
+      totalDocCount++;
+    }
+
+    outStream.end();
+    renameSync(TEMP_JSON, OUT_JSON);
+    console.log(`   ✓ Sukses streaming merge JSON! (${mergedCount} record terupdate)`);
+
+    // Live Upsert ke SurrealDB Instance lokal jika aktif (100% Idempotent)
+    try {
+      const deltaList = deltaListForSurreal;
+      if (deltaList.length > 0) {
+        let failedUpserts = 0;
+        for (let i = 0; i < deltaList.length; i += 25) {
+          const chunk = deltaList.slice(i, i + 25);
+          const stmts = chunk.map(doc => {
+            const rawId = (doc.id || "").replace(/^assignment:/, "") || doc.assignment_id.replace(/-/g, "_");
+            const { id, ...docData } = doc;
+            return `UPSERT assignment:${rawId} MERGE ${JSON.stringify(docData)};`;
+          }).join("\n");
+
+          const surrealRes = await fetch("http://127.0.0.1:8900/sql", {
+            method: "POST",
+            headers: {
+              "Accept": "application/json",
+              "NS": "bps_mempawah",
+              "DB": "se2026",
+              "surreal-ns": "bps_mempawah",
+              "surreal-db": "se2026",
+              "Authorization": "Basic " + Buffer.from("root:root").toString("base64")
+            },
+            body: `USE NS bps_mempawah; USE DB se2026;\n${stmts}`
+          }).catch((err) => {
+            console.warn(`⚠️ Network error ke SurrealDB: ${err.message}`);
+            return null;
+          });
+
+          if (surrealRes && surrealRes.ok) {
+            const results = await surrealRes.json();
+            const errs = results.filter(r => r.status === "ERR");
+            if (errs.length > 0) {
+              failedUpserts += errs.length;
+              console.warn(`⚠️ SurrealDB query error: ${errs[0].result}`);
+            }
+          }
+        }
+        if (failedUpserts === 0) {
+          console.log(`   ✓ Live instance SurrealDB diperbarui secara idempotent dengan ${deltaList.length} record delta.`);
+        } else {
+          console.warn(`   ⚠️ Live instance SurrealDB diperbarui (${deltaList.length - failedUpserts} sukses, ${failedUpserts} gagal).`);
+        }
+      }
+    } catch (err) {
+      console.warn(`⚠️ Terjadi kesalahan saat live upsert ke SurrealDB: ${err.message}`);
+    }
+
+    // Update State
+    ensureDir(STATE_FILE);
+    writeFileSync(STATE_FILE, JSON.stringify({
+      last_sync_timestamp: newMaxModDate,
+      total_records: totalDocCount,
+      last_run_mode: "DELTA",
+      last_merged_count: mergedCount,
+      updated_at: new Date().toISOString()
+    }, null, 2), "utf-8");
+
+    currentCheckpoint = newMaxModDate;
+    totalAllMerged += mergedCount;
+    console.log(`\n🎉 [BATCH ${batchNum} SUCCESS] ${mergedCount} record delta berhasil diintegrasikan (Checkpoint: ${newMaxModDate})\n`);
+
+    if (deltaBaseRows.length < 9000) {
+      hasMore = false;
+      break;
+    }
+    batchNum++;
+  }
+
+  console.log(`\n🎉 [DELTA SYNC SELESAI] Total ${totalAllMerged} record telah diperbarui hingga checkpoint ${currentCheckpoint}\n`);
+
+  // Sinkronisasi tabel anak roster ART (nested_dtsen_var)
+  try {
+    const { syncNestedDtsenVar } = await import("./sync-dtsen-var.js");
+    console.log("── Melanjutkan sinkronisasi delta roster ART (nested_dtsen_var) ──");
+    await syncNestedDtsenVar();
+  } catch (dtsenErr) {
+    console.warn(`⚠️ Catatan sinkronisasi nested_dtsen_var: ${dtsenErr.message}`);
+  }
+
+  return { success: true, mode: "DELTA", updatedCount: totalAllMerged, checkpoint: currentCheckpoint };
 }
 
 /**
@@ -641,6 +746,15 @@ async function runSurrealFullSyncInternal(limit = 1000) {
     last_run_mode: "FULL",
     updated_at: new Date().toISOString()
   }, null, 2), "utf-8");
+
+  // Sinkronisasi tabel anak roster ART (nested_dtsen_var)
+  try {
+    const { syncNestedDtsenVar } = await import("./sync-dtsen-var.js");
+    console.log("── Melanjutkan sinkronisasi roster ART (nested_dtsen_var) ──");
+    await syncNestedDtsenVar();
+  } catch (dtsenErr) {
+    console.warn(`⚠️ Catatan sinkronisasi nested_dtsen_var: ${dtsenErr.message}`);
+  }
 
   return { success: true, count: finalRecords.length, columns: allKeys.length };
 }

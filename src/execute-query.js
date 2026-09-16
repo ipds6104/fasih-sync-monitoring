@@ -27,9 +27,17 @@ async function getChromeArgs() {
     "--disable-blink-features=AutomationControlled",
     "--disable-infobars",
     "--window-size=1280,800",
-    "--ignore-certificate-errors",
-    "--host-resolver-rules=MAP fasih-dashboard.bps.go.id 10.1.110.14, MAP sso.bps.go.id 10.0.11.120"
+    "--ignore-certificate-errors"
   ];
+  if (platform() === "linux") {
+    try {
+      const [dashIp] = await dns.promises.resolve4("fasih-dashboard.bps.go.id");
+      const [ssoIp] = await dns.promises.resolve4("sso.bps.go.id");
+      if (dashIp && ssoIp) {
+        args.push(`--host-resolver-rules=MAP fasih-dashboard.bps.go.id ${dashIp}, MAP sso.bps.go.id ${ssoIp}`);
+      }
+    } catch {}
+  }
   return args;
 }
 
@@ -64,9 +72,10 @@ async function performLogin() {
     
     console.log("→ Menunggu pengalihan ke SSO...");
     await page.waitForURL((url) => url.hostname.includes("sso.bps.go.id"), { timeout: 30000 });
+    await page.waitForTimeout(2000); // Allow F5 BIG-IP WAF (HaloSIS) JS challenge to complete
     
     console.log("→ Mengisi kredensial SSO...");
-    await page.waitForSelector("#username", { timeout: 15000 });
+    await page.waitForSelector("#username", { timeout: 20000 });
     await page.fill("#username", USERNAME);
     await page.fill("#password", PASSWORD);
     await page.click("#kc-login");
@@ -161,8 +170,22 @@ export async function refreshSessionViaBrowser() {
   return performLogin();
 }
 
+import { canExecuteQuery, recordQueryExecution, getDailyQuotaStatus } from "./quota-tracker.js";
+
 // Execute query using native fetch
 export async function executeQuery(sql, cookieStr, csrfToken, queryLimit = 9000) {
+  if (!canExecuteQuery(1)) {
+    const status = getDailyQuotaStatus();
+    return new Response(JSON.stringify({
+      status: "error",
+      errors: [`DAILY_QUOTA_EXCEEDED: Batas kuota kueri harian BPS SQL Lab (${status.queries_today}/${status.max_daily_limit}) tercapai.`]
+    }), {
+      status: 429,
+      statusText: "Daily Quota Exceeded",
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
   const randStr = (len = 10) => {
     const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let res = "";
@@ -188,17 +211,26 @@ export async function executeQuery(sql, cookieStr, csrfToken, queryLimit = 9000)
     expand_data: true
   };
 
-  const res = await fetch(`${BASE_URL}/api/v1/sqllab/execute/`, {
-    method: "POST",
-    headers: {
-      "accept": "application/json",
-      "content-type": "application/json",
-      "x-csrftoken": csrfToken || "",
-      "cookie": cookieStr,
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    },
-    body: JSON.stringify(payload)
-  });
+  let res;
+  try {
+    res = await fetch(`${BASE_URL}/api/v1/sqllab/execute/`, {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "x-csrftoken": csrfToken || "",
+        "cookie": cookieStr,
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(180000)
+    });
+  } catch (netErr) {
+    recordQueryExecution(sql, 0, false);
+    throw netErr;
+  }
+
+  recordQueryExecution(sql, 0, res.ok);
 
   if (res.status === 429) {
     console.warn("\n⚠️ [Superset Rate Limit] Kuota kueri harian BPS Superset (300 per 1 hari) tercapai untuk akun ini.");
