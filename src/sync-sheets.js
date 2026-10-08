@@ -503,6 +503,7 @@ export async function syncAnomaliToGoogleSheets(data, sheetTitle = "Anomali") {
 
   // 1a. Membaca data manual yang sudah ada di tab "Anomali" agar tidak tertimpa
   const existingManualInputs = new Map();
+  const existingFullRowsMap = new Map();
   if (sheetExists) {
     console.log(`  → Membaca data manual yang sudah ada di tab "${sheetTitle}"...`);
     try {
@@ -512,6 +513,22 @@ export async function syncAnomaliToGoogleSheets(data, sheetTitle = "Anomali") {
       });
       const currentRows = currentDataResp.data.values;
       if (currentRows && currentRows.length > 0) {
+        // Simpan backup lokal terlebih dahulu sebelum proses apapun
+        try {
+          const fs = await import("fs");
+          const path = await import("path");
+          const backupDir = path.resolve(process.cwd(), "results");
+          const safeName = sheetTitle.replace(/[^a-zA-Z0-9]/g, "_");
+          fs.writeFileSync(
+            path.resolve(backupDir, `backup_${safeName}.json`),
+            JSON.stringify(currentRows, null, 2),
+            "utf-8"
+          );
+          console.log(`    ✓ Backup lokal otomatis tersimpan: results/backup_${safeName}.json`);
+        } catch (backupErr) {
+          console.warn(`    ⚠ Gagal menyimpan file backup lokal: ${backupErr.message}`);
+        }
+
         const headers = currentRows[0];
         const idxIdAnomali = headers.indexOf("ID Anomali");
         const idxTindakLanjut = headers.indexOf("Tindak Lanjut Anomali");
@@ -523,6 +540,7 @@ export async function syncAnomaliToGoogleSheets(data, sheetTitle = "Anomali") {
             const row = currentRows[i];
             const idAnomali = row[idxIdAnomali];
             if (idAnomali) {
+              existingFullRowsMap.set(idAnomali, row);
               existingManualInputs.set(idAnomali, {
                 tindakLanjut: idxTindakLanjut !== -1 ? row[idxTindakLanjut] || "" : "",
                 catatan: idxCatatan !== -1 ? row[idxCatatan] || "" : "",
@@ -672,16 +690,17 @@ export async function syncAnomaliToGoogleSheets(data, sheetTitle = "Anomali") {
       if (!newApiIds.has(idAnomali)) {
         const hasManualInput = manual.tindakLanjut || manual.catatan || manual.keterangan;
         if (hasManualInput) {
-          orphanRows.push([
-            orphanNo++,
-            idAnomali,
-            "-", // No Anomali
-            "[TIDAK ADA DI DASHBOARD]", // Status Kasus
-            "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-",
-            manual.tindakLanjut,
-            manual.catatan,
-            manual.keterangan,
-          ]);
+          const origRow = existingFullRowsMap.get(idAnomali) || [];
+          const orphanRow = [...origRow];
+          // Pastikan panjang array minimal 20 kolom (A:T)
+          while (orphanRow.length < 20) orphanRow.push("-");
+          orphanRow[0] = orphanNo++; // Perbarui no urut
+          orphanRow[1] = idAnomali;
+          orphanRow[3] = "[TIDAK ADA DI DASHBOARD]"; // Tandai status kasus
+          orphanRow[17] = manual.tindakLanjut;
+          orphanRow[18] = manual.catatan;
+          orphanRow[19] = manual.keterangan;
+          orphanRows.push(orphanRow);
         }
       }
     }

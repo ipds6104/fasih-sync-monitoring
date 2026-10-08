@@ -19,6 +19,12 @@ service-account-*.json
 # ── Results & Data ─────────────────────────────────────────────────────────────
 results/
 data/
+export_parquet/
+*.parquet
+*.zip
+scratch/
+__pycache__/
+*.pyc
 *.db
 *.sst
 *.vlog
@@ -64,5 +70,8 @@ backups/
 *.tmp
 *.tmp.json
 autostart.vbs
-scratch/
 src/test-inspect-*.js
+
+# ── Rust Build Artifacts ───────────────────────────────────────────────────────
+target/
+**/target/

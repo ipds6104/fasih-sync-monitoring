@@ -1,0 +1,15 @@
+[package]
+name = "se_cross_matcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parquet = { version = "53", default-features = false, features = ["arrow", "zstd"] }
+arrow = "53"
+rayon = "1.10"
+strsim = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+indicatif = { version = "0.17", features = ["rayon"] }
+csv = "1.3"

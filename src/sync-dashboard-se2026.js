@@ -166,14 +166,17 @@ export async function syncDashboardSE2026() {
     if (process.env.SYNC_TO_GOOGLE_SHEETS === "true") {
       console.log("\n  [Tahap 5] Sinkronisasi ke Google Sheets...");
       
+      const tabUsaha = process.env.SPREADSHEET_ANOMALI_USAHA_TAB || (process.env.SPREADSHEET_ANOMALI_USAHA_RANGE ? process.env.SPREADSHEET_ANOMALI_USAHA_RANGE.split("!")[0] : "Anomali Usaha");
+      const tabKeluarga = process.env.SPREADSHEET_ANOMALI_KELUARGA_TAB || (process.env.SPREADSHEET_ANOMALI_KELUARGA_RANGE ? process.env.SPREADSHEET_ANOMALI_KELUARGA_RANGE.split("!")[0] : "Anomali Keluarga");
+
       console.log("  → Mengunggah Data Capaian ke tab SE2026...");
       await syncSE2026ToGoogleSheets(recordsCapaian);
 
-      console.log("  → Mengunggah Data Anomali Usaha ke tab Anomali Usaha...");
-      await syncAnomaliToGoogleSheets(recordsUsaha, "Anomali Usaha");
+      console.log(`  → Mengunggah Data Anomali Usaha ke tab ${tabUsaha}...`);
+      await syncAnomaliToGoogleSheets(recordsUsaha, tabUsaha);
 
-      console.log("  → Mengunggah Data Anomali Keluarga ke tab Anomali Keluarga...");
-      await syncAnomaliToGoogleSheets(recordsKeluarga, "Anomali Keluarga");
+      console.log(`  → Mengunggah Data Anomali Keluarga ke tab ${tabKeluarga}...`);
+      await syncAnomaliToGoogleSheets(recordsKeluarga, tabKeluarga);
     }
 
     console.log("\n  ✓ SE2026 Capaian & Kedua Anomali Sync Selesai dengan Sukses!");

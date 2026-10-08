@@ -116,7 +116,7 @@ export async function loadSchemaFromXlsx(xlsxPath = KAMUS_XLSX_PATH) {
  */
 let currentSession = null;
 
-async function runQueryWithAutoSession(sql, queryLimit = 9000) {
+export async function runQueryWithAutoSession(sql, queryLimit = 9000) {
   if (!currentSession) {
     currentSession = loadCachedSession();
     if (!currentSession) {
@@ -315,11 +315,10 @@ async function runSurrealDeltaSyncInternal() {
       }
     }
 
-    // Step 2: Extract root_table via Direct JOIN (Hanya 1-2 kueri total, tanpa loop batch!)
-    console.log(`\n🏠 [Step 2/3] Menarik kolom root_table untuk ${deltaBaseRows.length} delta assignment (Batch ${batchNum})...`);
-    const rootFrom = `root_table r JOIN base_table_assignment b ON r.assignment_id = b.assignment_id`;
-    const rootWhere = `b.level_2_full_code = '6104' AND b.is_active = 1 AND b.assignment_date_modified > '${currentCheckpoint}' ORDER BY b.assignment_date_modified ASC LIMIT ${deltaBaseRows.length}`;
-    const rootStmts = buildMultiBlockConcatSql("root_table", schema.root_table, rootWhere, 25, 4, "r", rootFrom);
+    // Step 2: Extract root_table via direct filter (2 blocks per query = 50 cols, tanpa ORDER BY berat!)
+    console.log(`\n🏠 [Step 2/3] Menarik kolom root_table untuk delta assignment sejak ${currentCheckpoint}...`);
+    const rootWhere = `level_2_full_code = '6104' AND assignment_date_modified > '${currentCheckpoint}'`;
+    const rootStmts = buildMultiBlockConcatSql("root_table", schema.root_table, rootWhere, 25, 2);
 
     for (let sIdx = 0; sIdx < rootStmts.length; sIdx++) {
       console.log(`   -> [root_table] Menjalankan kueri blok ${sIdx + 1}/${rootStmts.length}...`);
@@ -341,11 +340,10 @@ async function runSurrealDeltaSyncInternal() {
       }
     }
 
-    // Step 3: Extract se2026_nested via Direct JOIN (Hanya 4-5 kueri total, tanpa loop batch!)
-    console.log(`\n🏢 [Step 3/3] Menarik kolom se2026_nested untuk ${deltaBaseRows.length} delta assignment (Batch ${batchNum})...`);
-    const seFrom = `se2026_nested n JOIN base_table_assignment b ON n.assignment_id = b.assignment_id`;
-    const seWhere = `b.level_2_full_code = '6104' AND b.is_active = 1 AND b.assignment_date_modified > '${currentCheckpoint}' ORDER BY b.assignment_date_modified ASC LIMIT ${deltaBaseRows.length}`;
-    const seStmts = buildMultiBlockConcatSql("se2026_nested", schema.se2026_nested, seWhere, 25, 4, "n", seFrom);
+    // Step 3: Extract se2026_nested via direct filter (2 blocks per query = 50 cols, tanpa ORDER BY berat!)
+    console.log(`\n🏢 [Step 3/3] Menarik kolom se2026_nested untuk delta assignment sejak ${currentCheckpoint}...`);
+    const seWhere = `level_2_full_code = '6104' AND assignment_date_modified > '${currentCheckpoint}'`;
+    const seStmts = buildMultiBlockConcatSql("se2026_nested", schema.se2026_nested, seWhere, 25, 2);
 
     for (let sIdx = 0; sIdx < seStmts.length; sIdx++) {
       console.log(`   -> [se2026_nested] Menjalankan kueri blok ${sIdx + 1}/${seStmts.length}...`);
@@ -506,6 +504,16 @@ async function runSurrealDeltaSyncInternal() {
     await syncNestedDtsenVar();
   } catch (dtsenErr) {
     console.warn(`⚠️ Catatan sinkronisasi nested_dtsen_var: ${dtsenErr.message}`);
+  }
+
+  // Sinkronisasi otomatis ke berkas Parquet jika ada pembaruan delta
+  if (totalAllMerged > 0 && process.env.AUTO_EXPORT_PARQUET !== "false") {
+    try {
+      console.log("\n── Memperbarui seluruh berkas Apache Parquet secara lokal dari SurrealDB ──");
+      execSync("python export_to_parquet.py --force", { stdio: "inherit" });
+    } catch (pqErr) {
+      console.warn(`⚠️ Catatan ekspor Parquet: ${pqErr.message}`);
+    }
   }
 
   return { success: true, mode: "DELTA", updatedCount: totalAllMerged, checkpoint: currentCheckpoint };

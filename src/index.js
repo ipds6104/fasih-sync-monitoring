@@ -13,6 +13,7 @@ import { syncProgressFromSqlLab } from "./sync-progress-sqllab.js";
 import { runPullProgressPetugas } from "./pull-progress-petugas.js";
 import { syncSurrealSqllab } from "./sync-surreal-sqllab.js";
 import { syncNestedDtsenVar } from "./sync-dtsen-var.js";
+import { runSyncAnomali, syncAnomaliLocalToGoogleSheets } from "./sync-anomali.js";
 
 config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -1400,11 +1401,15 @@ if (cmd === "login") {
   syncSurrealSqllab().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "sync-dtsen") {
   syncNestedDtsenVar().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-anomali") {
+  runSyncAnomali().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-anomali-local") {
+  syncAnomaliLocalToGoogleSheets().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "pull-petugas") {
   runPullProgressPetugas().catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-sqllab|sync-surreal|sync-dtsen|pull-petugas]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-dashboard|sync-anomali|sync-anomali-local|sync-sqllab|sync-surreal|sync-dtsen|pull-petugas]");
   process.exit(1);
 }
 

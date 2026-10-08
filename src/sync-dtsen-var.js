@@ -222,7 +222,7 @@ async function runDeltaSyncForTable(tableName, schemaCols, extraIdCols, lastSync
     }
 
     const checkSql = `
-      SELECT count(*) AS total_delta
+      SELECT count(assignment_id) AS total_delta
       FROM ${tableName}
       WHERE level_2_full_code = '6104'
         AND assignment_date_modified > '${currentCheckpoint}';
@@ -240,9 +240,10 @@ async function runDeltaSyncForTable(tableName, schemaCols, extraIdCols, lastSync
 
     console.log(`   ✓ [Batch ${batchNum}] Ditemukan ${totalDelta} baris termodifikasi sejak checkpoint (${currentCheckpoint}).`);
 
-    const batchLimit = Math.min(totalDelta, 9000);
-    const whereClause = `level_2_full_code = '6104' AND assignment_date_modified > '${currentCheckpoint}' ORDER BY assignment_date_modified ASC LIMIT ${batchLimit}`;
-    const stmts = buildMultiBlockConcatSql(tableName, schemaCols, whereClause, 25, 4, "", "", extraIdCols);
+    const whereClause = totalDelta > 9000
+      ? `level_2_full_code = '6104' AND assignment_date_modified > '${currentCheckpoint}' ORDER BY assignment_date_modified ASC LIMIT 9000`
+      : `level_2_full_code = '6104' AND assignment_date_modified > '${currentCheckpoint}'`;
+    const stmts = buildMultiBlockConcatSql(tableName, schemaCols, whereClause, 25, 2, "", "", extraIdCols);
 
     const records = {};
     for (let sIdx = 0; sIdx < stmts.length; sIdx++) {
@@ -379,7 +380,7 @@ async function runFullSyncForTable(tableName, schemaCols, extraIdCols, limitRows
     try { state = JSON.parse(readFileSync(stateFile, "utf-8")); } catch {}
   }
 
-  const totalSql = `SELECT count(*) AS total_all FROM ${tableName} WHERE level_2_full_code = '6104';`;
+  const totalSql = `SELECT count(assignment_id) AS total_all FROM ${tableName} WHERE level_2_full_code = '6104';`;
   const totalRows = await runQueryWithAutoSession(totalSql, 10);
   const totalMempawah = Number(totalRows[0]?.total_all || 0);
 

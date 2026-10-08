@@ -430,15 +430,14 @@ export function parseSurrealQueryString(queryString) {
   for (const token of colTokens) {
     const t = token.trim();
     if (t.includes("count(") || t.includes("COUNT(")) {
-      // Aggregate alias e.g. approved = count(assignment_status_alias = 'APPROVED...')
-      const aggMatch = t.match(/(\w+)\s*=\s*count\((.+)\)/i) || t.match(/count\((.+)\)\s+AS\s+(\w+)/i);
+      // Aggregate alias e.g. approved = count(assignment_status_alias = 'APPROVED...') or count(cond) AS alias
+      const aggMatch = t.match(/(\w+)\s*=\s*count\((.+)\)/i) || t.match(/count\((.+?)\)\s+AS\s+(\w+)/i);
       if (aggMatch) {
-        const alias = aggMatch[1];
-        const cond = aggMatch[2];
+        const alias = aggMatch[2] && t.toLowerCase().includes(" as ") ? aggMatch[2] : aggMatch[1];
+        const cond = aggMatch[2] && t.toLowerCase().includes(" as ") ? aggMatch[1] : aggMatch[2];
         aggregates[alias] = compileFilter(cond);
-      } else {
-        aggregates["total_count"] = () => true;
       }
+      // Note: plain count() is already tracked automatically via initialObj.total_count++
     } else {
       selectCols.push(t.replace(/AS\s+\w+/i, "").trim());
     }
