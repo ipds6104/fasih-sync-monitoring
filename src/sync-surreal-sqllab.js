@@ -498,25 +498,62 @@ async function runSurrealDeltaSyncInternal() {
   console.log(`\n🎉 [DELTA SYNC SELESAI] Total ${totalAllMerged} record telah diperbarui hingga checkpoint ${currentCheckpoint}\n`);
 
   // Sinkronisasi tabel anak roster ART (nested_dtsen_var)
+  let childUpdatedCount = 0;
+  let childUpdatedTables = [];
   try {
     const { syncNestedDtsenVar } = await import("./sync-dtsen-var.js");
     console.log("── Melanjutkan sinkronisasi delta roster ART (nested_dtsen_var) ──");
-    await syncNestedDtsenVar();
+    const dtsenRes = await syncNestedDtsenVar();
+    childUpdatedCount = dtsenRes?.totalUpdated || 0;
+    childUpdatedTables = dtsenRes?.updatedTables || [];
   } catch (dtsenErr) {
     console.warn(`⚠️ Catatan sinkronisasi nested_dtsen_var: ${dtsenErr.message}`);
   }
 
-  // Sinkronisasi otomatis ke berkas Parquet jika ada pembaruan delta
-  if (totalAllMerged > 0 && process.env.AUTO_EXPORT_PARQUET !== "false") {
-    try {
-      console.log("\n── Memperbarui seluruh berkas Apache Parquet secara lokal dari SurrealDB ──");
-      execSync("python export_to_parquet.py --force", { stdio: "inherit" });
-    } catch (pqErr) {
-      console.warn(`⚠️ Catatan ekspor Parquet: ${pqErr.message}`);
+  const grandTotalChanges = totalAllMerged + childUpdatedCount;
+  const forceExport = process.argv.includes("--force-export") || process.env.FORCE_EXPORT_PARQUET === "true";
+
+  // Tentukan tabel mana saja yang perlu diekspor ke Parquet
+  const tablesToExport = [];
+  if (totalAllMerged > 0) tablesToExport.push("assignment");
+  if (childUpdatedTables.length > 0) {
+    for (const ct of childUpdatedTables) {
+      if (!tablesToExport.includes(ct)) tablesToExport.push(ct);
     }
   }
 
-  return { success: true, mode: "DELTA", updatedCount: totalAllMerged, checkpoint: currentCheckpoint };
+  // Periksa apakah ada berkas .parquet yang belum ada sama sekali di disk
+  const ROOT_DIR = resolve(__dirname, "..");
+  const ALL_PRIORITY_TABLES = ["kp_nested", "nested_meteran", "se2026_nested", "assignment", "nested_dtsen_var", "nested_dtsen"];
+  for (const tbl of ALL_PRIORITY_TABLES) {
+    if (!existsSync(resolve(ROOT_DIR, "export_parquet", `${tbl}.parquet`))) {
+      if (!tablesToExport.includes(tbl)) tablesToExport.push(tbl);
+    }
+  }
+
+  // Sinkronisasi otomatis ke berkas Parquet & Google Drive HANYA jika ada pembaruan data atau file belum lengkap
+  if (tablesToExport.length > 0 || forceExport) {
+    const targetArg = forceExport && tablesToExport.length === 0 ? "" : tablesToExport.join(",");
+    console.log(`\n🎉 Terdeteksi ${grandTotalChanges} perubahan data (${totalAllMerged} penugasan + ${childUpdatedCount} roster anak).`);
+    if (process.env.AUTO_EXPORT_PARQUET !== "false") {
+      try {
+        console.log(`── Memperbarui berkas Apache Parquet secara lokal dari SurrealDB: [${targetArg || 'SEMUA TABEL'}] ──`);
+        execSync(`python export_to_parquet.py ${targetArg} --force`, { stdio: "inherit" });
+
+        if (process.env.AUTO_UPLOAD_GDRIVE !== "false") {
+          console.log("\n── Mengompresi dan mengunggah berkas Parquet terbaru ke Google Drive ──");
+          const { uploadParquetZipToGDrive } = await import("./upload-parquet-to-gdrive.js");
+          await uploadParquetZipToGDrive();
+        }
+      } catch (err) {
+        console.warn(`⚠️ Catatan ekspor/upload Parquet: ${err.message}`);
+      }
+    }
+  } else {
+    console.log("\nℹ️ [NO DATA CHANGES] Tidak ada perubahan data baru pada siklus ini (0 penugasan, 0 anak). Melewati ekspor Parquet & upload GDrive untuk menghemat waktu.");
+  }
+
+  return { success: true, mode: "DELTA", updatedCount: totalAllMerged, childUpdatedCount, checkpoint: currentCheckpoint };
 }
 
 /**
@@ -762,6 +799,22 @@ async function runSurrealFullSyncInternal(limit = 1000) {
     await syncNestedDtsenVar();
   } catch (dtsenErr) {
     console.warn(`⚠️ Catatan sinkronisasi nested_dtsen_var: ${dtsenErr.message}`);
+  }
+
+  // Sinkronisasi otomatis ke berkas Parquet & Google Drive pada Full Sync
+  if (finalRecords.length > 0 && process.env.AUTO_EXPORT_PARQUET !== "false") {
+    try {
+      console.log("\n── Memperbarui seluruh berkas Apache Parquet secara lokal dari SurrealDB ──");
+      execSync("python export_to_parquet.py --force", { stdio: "inherit" });
+
+      if (process.env.AUTO_UPLOAD_GDRIVE !== "false") {
+        console.log("\n── Mengompresi dan mengunggah berkas Parquet terbaru ke Google Drive ──");
+        const { uploadParquetZipToGDrive } = await import("./upload-parquet-to-gdrive.js");
+        await uploadParquetZipToGDrive();
+      }
+    } catch (err) {
+      console.warn(`⚠️ Catatan ekspor/upload Parquet: ${err.message}`);
+    }
   }
 
   return { success: true, count: finalRecords.length, columns: allKeys.length };

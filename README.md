@@ -233,7 +233,11 @@ Berikut adalah kamus parameter konfigurasi utama pada berkas [`.env`](file:///c:
      `SELECT ... FROM base_table_assignment WHERE level_2_full_code = '6104' AND assignment_date_modified > '${lastSyncTime}' ORDER BY assignment_date_modified ASC LIMIT 9000;`
   2. Sengaja **TIDAK menyaring `is_active = 1`** saat penarikan agar perubahan *soft-delete* dari pusat dapat terdeteksi.
   3. Menggunakan teknik **Checkpoint Rollover**: Jika perubahan lebih dari 9.000 data, penarikan dipotong di baris ke-9.000 dan checkpoint di `results/surrealdb_sync_state.json` diperbarui ke timestamp baris tersebut. Pada siklus berikutnya, scheduler otomatis melanjutkan sisa data hingga konvergen sempurna (*zero data loss*).
-  4. Data disimpan ke container SurrealDB dan file document store [`results/surrealdb_document_store.json`](file:///c:/projects/fasih-sync-monitoring/results/surrealdb_document_store.json) (1,8 GB) + CSV (674 MB).
+  4. Data disimpan ke container SurrealDB dan file document store [`results/surrealdb_document_store.json`](file:///c:/projects/fasih-sync-monitoring/results/surrealdb_document_store.json) (2,0 GB) + CSV (674 MB).
+  5. **End-to-End Pipeline Otomatis (Ekspor Parquet & Upload Google Drive):**
+     - Jika terdeteksi perubahan data baru (`grandTotalChanges > 0` pada penugasan maupun roster anak), scheduler otomatis mengekspor tabel termodifikasi ke Apache Parquet ([`export_to_parquet.py`](file:///c:/projects/fasih-sync-monitoring/export_to_parquet.py)), mengompresi arsip ZIP, dan memperbarui berkas di Google Drive publik ([`src/upload-parquet-to-gdrive.js`](file:///c:/projects/fasih-sync-monitoring/src/upload-parquet-to-gdrive.js)).
+     - Jika **TIDAK ada perubahan data** (0 baris), ekspor Parquet dan upload GDrive dilewati (*skipped*) secara instan (< 2 detik), menghemat utilisasi CPU dan bandwidth.
+     - Tautan folder publik Google Drive: [Folder Export Parquet SE2026](https://drive.google.com/drive/folders/1QGp-3V_R0JBSj3HRnZEyAd7Qg1016FZY).
 
 ### 3. Pipeline Dashboard SE2026 Capaian & Anomali Harian
 * **Perintah:** `npm run sync-se2026`

@@ -609,6 +609,8 @@ export async function syncNestedDtsenVar() {
       }
     ];
 
+    let totalChildUpdated = 0;
+    const updatedTables = [];
     for (const tbl of nestedTablesConfig) {
       if (targetTableFilter && tbl.name !== targetTableFilter) {
         continue;
@@ -633,14 +635,20 @@ export async function syncNestedDtsenVar() {
         (state.total_records || 0) >= tbl.thresholdForFull;
 
       if (isAlreadyFullySynced) {
-        await runDeltaSyncForTable(tbl.name, tbl.cols, tbl.extraIdCols, state.last_sync_timestamp, stateFile, outJson, outCsv);
+        const syncRes = await runDeltaSyncForTable(tbl.name, tbl.cols, tbl.extraIdCols, state.last_sync_timestamp, stateFile, outJson, outCsv);
+        const upd = syncRes?.updatedCount || 0;
+        totalChildUpdated += upd;
+        if (upd > 0) updatedTables.push(tbl.name);
       } else {
-        await runFullSyncForTable(tbl.name, tbl.cols, tbl.extraIdCols, limitVal, stateFile, outJson, outCsv);
+        const syncRes = await runFullSyncForTable(tbl.name, tbl.cols, tbl.extraIdCols, limitVal, stateFile, outJson, outCsv);
+        const upd = (syncRes?.count || syncRes?.updatedCount || 0);
+        totalChildUpdated += upd;
+        if (upd > 0) updatedTables.push(tbl.name);
       }
     }
 
     console.log(`\n✅ [SELESAI] Seluruh tabel anak SE2026 telah diproses ke SurrealDB!\n`);
-    return { success: true };
+    return { success: true, totalUpdated: totalChildUpdated, updatedTables };
   } finally {
     try { if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE); } catch {}
   }
