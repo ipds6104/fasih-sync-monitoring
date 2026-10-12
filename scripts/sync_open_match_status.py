@@ -126,6 +126,7 @@ def main():
 
     ec_aid_idx = headers.index("ASSIGNMENT_ID_EC") if "ASSIGNMENT_ID_EC" in headers else -1
     se_aid_idx = headers.index("ASSIGNMENT_ID_SE2026") if "ASSIGNMENT_ID_SE2026" in headers else -1
+    link_ec_idx = headers.index("Link Assignment Tambahan") if "Link Assignment Tambahan" in headers else -1
 
     # Tentukan nama kolom target baru
     COL_TERISI = "STATUS_PENGISIAN_SE2026"
@@ -156,17 +157,21 @@ def main():
     # Pastikan grid sheet cukup
     sheet_id = ensure_grid_dimensions(service, 1013758171, max(len(headers), col_link_idx + 1) + 2)
 
-    # 3. Kumpulkan seluruh NIK_KK_DTSEN untuk pencarian
+    # 3. Kumpulkan seluruh NIK_KK_DTSEN dan Link Assignment Tambahan untuk pencarian
     df_sheet_rows = []
     for r_idx, r in enumerate(rows[1:], start=2):
         nik = r[nik_kk_idx].strip() if nik_kk_idx < len(r) else ""
         ec_aid = r[ec_aid_idx].strip() if ec_aid_idx != -1 and ec_aid_idx < len(r) else ""
         se_aid = r[se_aid_idx].strip() if se_aid_idx != -1 and se_aid_idx < len(r) else ""
+        link_ec = r[link_ec_idx].strip() if link_ec_idx != -1 and link_ec_idx < len(r) else ""
+        if not ec_aid and link_ec:
+            ec_aid = link_ec.rstrip("/").split("/")[-1]
         df_sheet_rows.append({
             "row_number": r_idx,
             "nik_kk": nik,
             "ec_aid": ec_aid,
-            "se_aid": se_aid
+            "se_aid": se_aid,
+            "link_ec": link_ec
         })
 
     df_sheet = pd.DataFrame(df_sheet_rows)
@@ -182,72 +187,93 @@ def main():
     WITH 
     cand_dtsen AS (
         SELECT 
-            trim(nik_dtsen) as nik,
-            assignment_id,
-            assignment_status_alias,
-            assignment_date_modified
-        FROM '{PARQUET_DTSEN}'
-        WHERE nik_dtsen IS NOT NULL AND length(trim(nik_dtsen)) >= 10
-        UNION ALL
-        SELECT 
-            trim(nik_dtsen_prelist) as nik,
-            assignment_id,
-            assignment_status_alias,
-            assignment_date_modified
-        FROM '{PARQUET_DTSEN}'
-        WHERE nik_dtsen_prelist IS NOT NULL AND length(trim(nik_dtsen_prelist)) >= 10
+            trim(d.nik) as nik,
+            d.assignment_id,
+            d.assignment_status_alias,
+            d.assignment_date_modified,
+            a.root_ada_keluarga_value,
+            a.root_ada_keluarga_label
+        FROM (
+            SELECT 
+                trim(nik_dtsen) as nik,
+                assignment_id,
+                assignment_status_alias,
+                assignment_date_modified
+            FROM '{PARQUET_DTSEN}'
+            WHERE nik_dtsen IS NOT NULL AND length(trim(nik_dtsen)) >= 10
+            UNION ALL
+            SELECT 
+                trim(nik_dtsen_prelist) as nik,
+                assignment_id,
+                assignment_status_alias,
+                assignment_date_modified
+            FROM '{PARQUET_DTSEN}'
+            WHERE nik_dtsen_prelist IS NOT NULL AND length(trim(nik_dtsen_prelist)) >= 10
+        ) d
+        LEFT JOIN '{PARQUET_ASSIGNMENT}' a ON d.assignment_id = a.assignment_id
     ),
     cand_assignment AS (
         SELECT 
-            trim(root_nik_kk) as nik,
-            assignment_id,
-            assignment_status_alias,
-            assignment_date_modified
-        FROM '{PARQUET_ASSIGNMENT}'
-        WHERE root_nik_kk IS NOT NULL AND length(trim(root_nik_kk)) >= 10
-        UNION ALL
-        SELECT 
-            trim(root_nik) as nik,
-            assignment_id,
-            assignment_status_alias,
-            assignment_date_modified
-        FROM '{PARQUET_ASSIGNMENT}'
-        WHERE root_nik IS NOT NULL AND length(trim(root_nik)) >= 10
-        UNION ALL
-        SELECT 
-            trim(root_nik_prelist) as nik,
-            assignment_id,
-            assignment_status_alias,
-            assignment_date_modified
-        FROM '{PARQUET_ASSIGNMENT}'
-        WHERE root_nik_prelist IS NOT NULL AND length(trim(root_nik_prelist)) >= 10
+            trim(a.nik) as nik,
+            a.assignment_id,
+            a.assignment_status_alias,
+            a.assignment_date_modified,
+            a.root_ada_keluarga_value,
+            a.root_ada_keluarga_label
+        FROM (
+            SELECT 
+                trim(root_nik_kk) as nik,
+                assignment_id,
+                assignment_status_alias,
+                assignment_date_modified,
+                root_ada_keluarga_value,
+                root_ada_keluarga_label
+            FROM '{PARQUET_ASSIGNMENT}'
+            WHERE root_nik_kk IS NOT NULL AND length(trim(root_nik_kk)) >= 10
+            UNION ALL
+            SELECT 
+                trim(root_nik) as nik,
+                assignment_id,
+                assignment_status_alias,
+                assignment_date_modified,
+                root_ada_keluarga_value,
+                root_ada_keluarga_label
+            FROM '{PARQUET_ASSIGNMENT}'
+            WHERE root_nik IS NOT NULL AND length(trim(root_nik)) >= 10
+            UNION ALL
+            SELECT 
+                trim(root_nik_prelist) as nik,
+                assignment_id,
+                assignment_status_alias,
+                assignment_date_modified,
+                root_ada_keluarga_value,
+                root_ada_keluarga_label
+            FROM '{PARQUET_ASSIGNMENT}'
+            WHERE root_nik_prelist IS NOT NULL AND length(trim(root_nik_prelist)) >= 10
+        ) a
     ),
-    all_candidates AS (
+    all_matched_candidates AS (
         -- Matches by NIK_KK_DTSEN in dtsen
-        SELECT s.row_number, s.nik_kk, c.assignment_id, c.assignment_status_alias, c.assignment_date_modified
+        SELECT s.row_number, s.nik_kk, s.ec_aid, s.link_ec, c.assignment_id, c.assignment_status_alias, c.assignment_date_modified, c.root_ada_keluarga_value, c.root_ada_keluarga_label
         FROM sheet_data s
         JOIN cand_dtsen c ON s.nik_kk = c.nik
         WHERE s.nik_kk != ''
         UNION ALL
         -- Matches by NIK_KK_DTSEN in assignment
-        SELECT s.row_number, s.nik_kk, a.assignment_id, a.assignment_status_alias, a.assignment_date_modified
+        SELECT s.row_number, s.nik_kk, s.ec_aid, s.link_ec, a.assignment_id, a.assignment_status_alias, a.assignment_date_modified, a.root_ada_keluarga_value, a.root_ada_keluarga_label
         FROM sheet_data s
         JOIN cand_assignment a ON s.nik_kk = a.nik
         WHERE s.nik_kk != ''
-        UNION ALL
-        -- Matches by ASSIGNMENT_ID_EC from sheet
-        SELECT s.row_number, s.nik_kk, s.ec_aid as assignment_id, a.assignment_status_alias, a.assignment_date_modified
-        FROM sheet_data s
-        JOIN '{PARQUET_ASSIGNMENT}' a ON s.ec_aid = a.assignment_id
-        WHERE s.ec_aid != ''
-        UNION ALL
-        -- Matches by ASSIGNMENT_ID_SE2026 from sheet
-        SELECT s.row_number, s.nik_kk, s.se_aid as assignment_id, a.assignment_status_alias, a.assignment_date_modified
-        FROM sheet_data s
-        JOIN '{PARQUET_ASSIGNMENT}' a ON s.se_aid = a.assignment_id
-        WHERE s.se_aid != ''
     ),
-    ranked AS (
+    valid_candidates AS (
+        -- Hanya kandidat yang status keberadaan keluarganya BUKAN 'Tidak Ditemukan / Meninggal / Tidak Eligible'
+        SELECT *
+        FROM all_matched_candidates
+        WHERE 
+            (root_ada_keluarga_value IS NULL OR root_ada_keluarga_value NOT IN ('0', '3', '4', '5'))
+            AND (root_ada_keluarga_label IS NULL OR root_ada_keluarga_label NOT LIKE '%Tidak Ditemukan%')
+    ),
+    ranked_valid AS (
         SELECT 
             row_number,
             nik_kk,
@@ -282,17 +308,46 @@ def main():
                     assignment_date_modified DESC,
                     assignment_id DESC
             ) as rn
-        FROM all_candidates
+        FROM valid_candidates
         WHERE assignment_id IS NOT NULL AND assignment_id != ''
+    ),
+    final_ranked AS (
+        SELECT 
+            s.row_number,
+            s.nik_kk,
+            -- Aturan: Jika tidak ada assignment valid yang terisi lengkap (rank >= 80),
+            -- atau jika keberadaan keluarga tidak ditemukan, maka pilih assignment sesuai Link Assignment Tambahan di AZ
+            CASE 
+                WHEN r.status_rank >= 80 THEN r.assignment_id
+                ELSE s.ec_aid
+            END as chosen_aid,
+            CASE 
+                WHEN r.status_rank >= 80 THEN r.assignment_status_alias
+                ELSE COALESCE(ec_a.assignment_status_alias, 'OPEN')
+            END as chosen_status,
+            CASE 
+                WHEN r.status_rank >= 80 THEN 'Terisi Lengkap'
+                WHEN r.status_rank = 50 THEN 'Sedang Diisi (DRAFT)'
+                WHEN r.status_rank = 30 THEN 'Ditolak Pengawas'
+                ELSE 'Belum Terisi (OPEN)'
+            END as chosen_pengisian,
+            CASE 
+                WHEN r.status_rank >= 80 THEN r.status_rank
+                WHEN r.status_rank IS NOT NULL THEN r.status_rank
+                ELSE 10
+            END as final_rank
+        FROM sheet_data s
+        LEFT JOIN ranked_valid r ON s.row_number = r.row_number AND r.rn = 1
+        LEFT JOIN '{PARQUET_ASSIGNMENT}' ec_a ON s.ec_aid = ec_a.assignment_id
     )
     SELECT 
         row_number,
         nik_kk,
-        assignment_id,
-        assignment_status_alias,
-        status_rank
-    FROM ranked
-    WHERE rn = 1;
+        chosen_aid as assignment_id,
+        chosen_status as assignment_status_alias,
+        chosen_pengisian,
+        final_rank as status_rank
+    FROM final_ranked;
     """
 
     df_ranked = con.execute(ranking_sql).fetchdf()
@@ -315,21 +370,10 @@ def main():
     for r_idx in range(2, len(rows) + 1):
         cand = ranked_map.get(r_idx)
         if cand:
-            rank = cand["status_rank"]
-            status = cand["assignment_status_alias"] or ""
+            terisi = cand["chosen_pengisian"] or "Belum Terisi (OPEN)"
+            status = cand["assignment_status_alias"] or "OPEN"
             aid = cand["assignment_id"] or ""
             link = f"{SURVEY_BASE_URL}{aid}" if aid else ""
-
-            if rank >= 80:
-                terisi = "Terisi Lengkap"
-            elif rank == 50:
-                terisi = "Sedang Diisi (DRAFT)"
-            elif rank == 30:
-                terisi = "Ditolak Pengawas"
-            elif rank == 10:
-                terisi = "Belum Terisi (OPEN)"
-            else:
-                terisi = "Lainnya"
         else:
             terisi = "Belum Ada Assignment"
             status = "-"
