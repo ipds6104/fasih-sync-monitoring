@@ -16,13 +16,13 @@ service = build("sheets", "v4", credentials=creds)
 
 res = service.spreadsheets().values().get(
     spreadsheetId="1ZpwvQLXJUCwB5yqp7Y5mFMFv1JnHWw3WYP1ebcNsI1U",
-    range="'Data OPEN Match'!A1:BE15"
+    range="'Data OPEN Match'!A1:BF15"
 ).execute()
 
 rows = res.get("values", [])
 headers = rows[0]
 
-print("=== VERIFIKASI HASIL UPDATE LIVE GOOGLE SHEETS (MURNI KUNCI 3) ===")
+print("=== VERIFIKASI HASIL UPDATE LIVE GOOGLE SHEETS ===")
 for idx, r in enumerate(rows[1:], start=2):
     no = r[0] if len(r) > 0 else ""
     nama = r[6] if len(r) > 6 else ""
@@ -30,9 +30,11 @@ for idx, r in enumerate(rows[1:], start=2):
     status_pengisian = r[54] if len(r) > 54 else ""
     status_aid = r[55] if len(r) > 55 else ""
     link_aid = r[56] if len(r) > 56 else ""
+    anggota_tim = r[57] if len(r) > 57 else ""
     
     print(f"\nBaris {idx} (NO {no} - {nama} | NIK: {nik_peg}):")
     print(f"  Col BC (STATUS_PENGISIAN_SE2026):  {status_pengisian}")
     print(f"  Col BD (STATUS_ASSIGNMENT_SE2026): {status_aid}")
     print(f"  Col BE (LINK_ASSIGNMENT_SE2026):   {link_aid}")
+    print(f"  Col BF (ANGGOTA_TIM_PELAKSANA):    {anggota_tim}")
 

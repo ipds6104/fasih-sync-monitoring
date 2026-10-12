@@ -28,6 +28,9 @@ SPREADSHEET_ID = "1ZpwvQLXJUCwB5yqp7Y5mFMFv1JnHWw3WYP1ebcNsI1U"
 TAB_NAME = "Data OPEN Match"
 SURVEY_BASE_URL = "https://fasih-sm.bps.go.id/app/assignment/fd68e454-ba45-4b85-8205-f3bf777ded24/"
 
+SPREADSHEET_TIM_ID = "1i1H9U7Ex4nE8ocrcw0ZzI8KxGAQm93igIHA7OaiiOOQ"
+TAB_TIM_NAME = "Utama_Target Pegawai"
+
 PARQUET_ASSIGNMENT = os.path.join(ROOT_DIR, "export_parquet", "assignment.parquet").replace("\\", "/")
 PARQUET_DTSEN = os.path.join(ROOT_DIR, "export_parquet", "nested_dtsen.parquet").replace("\\", "/")
 
@@ -128,33 +131,41 @@ def main():
     link_ec_idx = headers.index("Link Assignment Tambahan") if "Link Assignment Tambahan" in headers else -1
 
     # Tentukan nama kolom target baru
-    COL_TERISI = "STATUS_PENGISIAN_SE2026"
-    COL_STATUS = "STATUS_ASSIGNMENT_SE2026"
-    COL_LINK   = "LINK_ASSIGNMENT_SE2026"
+    COL_TERISI  = "STATUS_PENGISIAN_SE2026"
+    COL_STATUS  = "STATUS_ASSIGNMENT_SE2026"
+    COL_LINK    = "LINK_ASSIGNMENT_SE2026"
+    COL_ANGGOTA = "ANGGOTA_TIM_PELAKSANA"
 
     # Cari apakah kolom target sudah ada sebelumnya (Idempoten!)
-    col_terisi_idx = headers.index(COL_TERISI) if COL_TERISI in headers else -1
-    col_status_idx = headers.index(COL_STATUS) if COL_STATUS in headers else -1
-    col_link_idx   = headers.index(COL_LINK) if COL_LINK in headers else -1
+    col_terisi_idx  = headers.index(COL_TERISI) if COL_TERISI in headers else -1
+    col_status_idx  = headers.index(COL_STATUS) if COL_STATUS in headers else -1
+    col_link_idx    = headers.index(COL_LINK) if COL_LINK in headers else -1
+    col_anggota_idx = headers.index(COL_ANGGOTA) if COL_ANGGOTA in headers else -1
 
     if col_terisi_idx == -1 or col_status_idx == -1 or col_link_idx == -1:
-        # Tambahkan 3 kolom di paling kanan
+        # Tambahkan 4 kolom di paling kanan
         start_col_idx = len(headers)
-        col_terisi_idx = start_col_idx
-        col_status_idx = start_col_idx + 1
-        col_link_idx   = start_col_idx + 2
+        col_terisi_idx  = start_col_idx
+        col_status_idx  = start_col_idx + 1
+        col_link_idx    = start_col_idx + 2
+        col_anggota_idx = start_col_idx + 3
         is_new_columns = True
     else:
         start_col_idx = min(col_terisi_idx, col_status_idx, col_link_idx)
-        is_new_columns = False
+        if col_anggota_idx == -1:
+            col_anggota_idx = max(col_terisi_idx, col_status_idx, col_link_idx) + 1
+            is_new_columns = True
+        else:
+            is_new_columns = False
 
     print(f"📍 Posisi Kolom Target (0-indexed):")
-    print(f"   - {COL_TERISI} : Kolom {col_terisi_idx} ({column_number_to_name(col_terisi_idx)})")
-    print(f"   - {COL_STATUS} : Kolom {col_status_idx} ({column_number_to_name(col_status_idx)})")
-    print(f"   - {COL_LINK}   : Kolom {col_link_idx} ({column_number_to_name(col_link_idx)})")
+    print(f"   - {COL_TERISI}  : Kolom {col_terisi_idx} ({column_number_to_name(col_terisi_idx)})")
+    print(f"   - {COL_STATUS}  : Kolom {col_status_idx} ({column_number_to_name(col_status_idx)})")
+    print(f"   - {COL_LINK}    : Kolom {col_link_idx} ({column_number_to_name(col_link_idx)})")
+    print(f"   - {COL_ANGGOTA} : Kolom {col_anggota_idx} ({column_number_to_name(col_anggota_idx)})")
 
     # Pastikan grid sheet cukup
-    sheet_id = ensure_grid_dimensions(service, 1013758171, max(len(headers), col_link_idx + 1) + 2)
+    sheet_id = ensure_grid_dimensions(service, 1013758171, max(len(headers), col_anggota_idx + 1) + 2)
 
     # 3. Kumpulkan seluruh NIK_PEGAWAI_DTSEN dan Link Assignment Tambahan
     df_sheet_rows = []
@@ -174,6 +185,29 @@ def main():
     df_sheet = pd.DataFrame(df_sheet_rows)
     unique_niks = df_sheet[df_sheet["nik_peg"] != ""]["nik_peg"].unique()
     print(f"   ✓ Memproses {len(unique_niks)} NIK Pegawai unik dari {len(df_sheet)} baris...")
+
+    # Ambil referensi Anggota Tim Pelaksana dari spreadsheet sumber (Opsi 1)
+    print(f"\n👥 Mengambil referensi Anggota Tim Pelaksana dari '{TAB_TIM_NAME}' ({SPREADSHEET_TIM_ID})...")
+    anggota_by_nik = {}
+    try:
+        res_tim = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_TIM_ID,
+            range=f"'{TAB_TIM_NAME}'!A1:AX1200"
+        ).execute()
+        src_rows = res_tim.get("values", [])
+        if src_rows:
+            src_headers = src_rows[0]
+            src_nik_idx = src_headers.index("NIK_PEGAWAI_DTSEN") if "NIK_PEGAWAI_DTSEN" in src_headers else -1
+            src_anggota_idx = src_headers.index("Anggota Tim Pelaksana") if "Anggota Tim Pelaksana" in src_headers else -1
+            if src_nik_idx != -1 and src_anggota_idx != -1:
+                for r in src_rows[1:]:
+                    nik = r[src_nik_idx].strip() if src_nik_idx < len(r) else ""
+                    anggota = r[src_anggota_idx].strip() if src_anggota_idx < len(r) else ""
+                    if nik and anggota:
+                        anggota_by_nik[nik] = anggota
+        print(f"   ✓ Berhasil memetakan {len(anggota_by_nik)} referensi tim pelaksana per NIK.")
+    except Exception as e:
+        print(f"   ⚠️ Gagal membaca referensi tim: {e}")
 
     # 4. Kueri DuckDB untuk mencari Assignment per NIK_PEGAWAI_DTSEN dengan Fallback ke Col AZ
     print("\n🔍 Mencocokkan data berbasis NIK_PEGAWAI_DTSEN dengan mekanisme awal (Fallback ke Kolom AZ)...")
@@ -353,10 +387,10 @@ def main():
     ranked_map = {row["row_number"]: row for row in df_ranked.to_dict(orient="records")}
     print(f"   ✓ Berhasil menentukan assignment terbaik untuk {len(df_ranked)} baris.")
 
-    # 5. Format hasil pembaruan nilai kolom BC, BD, BE
+    # 5. Format hasil pembaruan nilai kolom BC, BD, BE, BF
     update_rows = []
     # Baris 1: Header
-    update_rows.append([COL_TERISI, COL_STATUS, COL_LINK])
+    update_rows.append([COL_TERISI, COL_STATUS, COL_LINK, COL_ANGGOTA])
 
     summary_counts = {
         "Terisi Lengkap": 0,
@@ -365,9 +399,13 @@ def main():
         "Belum Terisi (OPEN)": 0,
         "Belum Ada Assignment": 0
     }
+    anggota_filled_count = 0
+
+    r_nik_map = {item["row_number"]: item["nik_peg"] for item in df_sheet_rows}
 
     for r_idx in range(2, len(rows) + 1):
         cand = ranked_map.get(r_idx)
+        nik_peg = r_nik_map.get(r_idx, "")
         if cand:
             terisi = cand["chosen_pengisian"] or "Belum Terisi (OPEN)"
             status = cand["assignment_status_alias"] or "OPEN"
@@ -378,13 +416,19 @@ def main():
             status = "-"
             link = "-"
 
+        anggota = anggota_by_nik.get(nik_peg, "") or "-"
+        if anggota != "-":
+            anggota_filled_count += 1
+
         summary_counts[terisi] = summary_counts.get(terisi, 0) + 1
-        update_rows.append([terisi, status, link])
+        update_rows.append([terisi, status, link, anggota])
 
     print("\n📊 RINGKASAN HASIL PEMADANAN:")
     print("------------------------------------------------------------------")
     for k, v in summary_counts.items():
         print(f"  {k:<25} : {v:>5} baris")
+    print(f"  {'Anggota Tim Terisi':<25} : {anggota_filled_count:>5} baris")
+    print(f"  {'Anggota Tim Kosong (-)':<25} : {len(rows) - 1 - anggota_filled_count:>5} baris")
     print("------------------------------------------------------------------")
 
     if args.dry_run:
@@ -393,7 +437,7 @@ def main():
 
     # 6. Tulis ke Google Sheets
     start_col_letter = column_number_to_name(start_col_idx)
-    end_col_letter = column_number_to_name(start_col_idx + 2)
+    end_col_letter = column_number_to_name(start_col_idx + 3)
     target_range = f"'{TAB_NAME}'!{start_col_letter}1:{end_col_letter}{len(update_rows)}"
 
     print(f"\n💾 Menulis pembaruan ke Google Sheets: {target_range} ({len(update_rows)} baris)...")
@@ -418,7 +462,7 @@ def main():
                                 "startRowIndex": 0,
                                 "endRowIndex": 1,
                                 "startColumnIndex": start_col_idx,
-                                "endColumnIndex": start_col_idx + 3
+                                "endColumnIndex": start_col_idx + 4
                             },
                             "cell": {
                                 "userEnteredFormat": {
@@ -434,7 +478,7 @@ def main():
             }
         ).execute()
 
-    print("\n✅ [BERHASIL] Pembaruan kolom status pengisian dan link assignment selesai secara idempoten!\n")
+    print("\n✅ [BERHASIL] Pembaruan kolom status pengisian, link assignment, dan anggota tim selesai secara idempoten!\n")
 
 if __name__ == "__main__":
     main()
