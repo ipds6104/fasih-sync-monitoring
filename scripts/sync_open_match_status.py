@@ -124,6 +124,9 @@ def main():
         print("❌ Kolom 'NIK_PEGAWAI_DTSEN' tidak ditemukan di header sheet.")
         return
 
+    ec_aid_idx = headers.index("ASSIGNMENT_ID_EC") if "ASSIGNMENT_ID_EC" in headers else -1
+    link_ec_idx = headers.index("Link Assignment Tambahan") if "Link Assignment Tambahan" in headers else -1
+
     # Tentukan nama kolom target baru
     COL_TERISI = "STATUS_PENGISIAN_SE2026"
     COL_STATUS = "STATUS_ASSIGNMENT_SE2026"
@@ -153,21 +156,27 @@ def main():
     # Pastikan grid sheet cukup
     sheet_id = ensure_grid_dimensions(service, 1013758171, max(len(headers), col_link_idx + 1) + 2)
 
-    # 3. Kumpulkan seluruh NIK_PEGAWAI_DTSEN (Kunci 3 Murni, Tanpa Fallback)
+    # 3. Kumpulkan seluruh NIK_PEGAWAI_DTSEN dan Link Assignment Tambahan
     df_sheet_rows = []
     for r_idx, r in enumerate(rows[1:], start=2):
         nik_peg = r[nik_peg_idx].strip() if nik_peg_idx < len(r) else ""
+        ec_aid = r[ec_aid_idx].strip() if ec_aid_idx != -1 and ec_aid_idx < len(r) else ""
+        link_ec = r[link_ec_idx].strip() if link_ec_idx != -1 and link_ec_idx < len(r) else ""
+        if not ec_aid and link_ec:
+            ec_aid = link_ec.rstrip("/").split("/")[-1]
         df_sheet_rows.append({
             "row_number": r_idx,
-            "nik_peg": nik_peg
+            "nik_peg": nik_peg,
+            "ec_aid": ec_aid,
+            "link_ec": link_ec
         })
 
     df_sheet = pd.DataFrame(df_sheet_rows)
     unique_niks = df_sheet[df_sheet["nik_peg"] != ""]["nik_peg"].unique()
     print(f"   ✓ Memproses {len(unique_niks)} NIK Pegawai unik dari {len(df_sheet)} baris...")
 
-    # 4. Kueri DuckDB untuk mencari Assignment per NIK_PEGAWAI_DTSEN
-    print("\n🔍 Mencocokkan data murni berbasis NIK_PEGAWAI_DTSEN terhadap Apache Parquet (Tanpa Kunci 1, 2 & Tanpa Fallback)...")
+    # 4. Kueri DuckDB untuk mencari Assignment per NIK_PEGAWAI_DTSEN dengan Fallback ke Col AZ
+    print("\n🔍 Mencocokkan data berbasis NIK_PEGAWAI_DTSEN dengan mekanisme awal (Fallback ke Kolom AZ)...")
     con = duckdb.connect()
     con.register("sheet_data", df_sheet)
 
@@ -242,138 +251,128 @@ def main():
     ),
     all_matched_candidates AS (
         -- Matches by NIK_PEGAWAI_DTSEN in dtsen
-        SELECT s.row_number, s.nik_peg, c.assignment_id, c.assignment_status_alias, c.assignment_date_modified, c.root_ada_keluarga_value, c.root_ada_keluarga_label
+        SELECT s.row_number, s.nik_peg, s.ec_aid, s.link_ec, c.assignment_id, c.assignment_status_alias, c.assignment_date_modified, c.root_ada_keluarga_value, c.root_ada_keluarga_label
         FROM sheet_data s
         JOIN cand_dtsen c ON s.nik_peg = c.nik
         WHERE s.nik_peg != ''
         UNION ALL
         -- Matches by NIK_PEGAWAI_DTSEN in assignment
-        SELECT s.row_number, s.nik_peg, a.assignment_id, a.assignment_status_alias, a.assignment_date_modified, a.root_ada_keluarga_value, a.root_ada_keluarga_label
+        SELECT s.row_number, s.nik_peg, s.ec_aid, s.link_ec, a.assignment_id, a.assignment_status_alias, a.assignment_date_modified, a.root_ada_keluarga_value, a.root_ada_keluarga_label
         FROM sheet_data s
         JOIN cand_assignment a ON s.nik_peg = a.nik
         WHERE s.nik_peg != ''
     ),
-    ranked_candidates AS (
+    valid_candidates AS (
+        -- Hanya kandidat yang status keberadaan keluarganya BUKAN 'Tidak Ditemukan / Meninggal / Tidak Eligible'
+        SELECT *
+        FROM all_matched_candidates
+        WHERE 
+            (root_ada_keluarga_value IS NULL OR root_ada_keluarga_value NOT IN ('0', '3', '4', '5'))
+            AND (root_ada_keluarga_label IS NULL OR root_ada_keluarga_label NOT LIKE '%Tidak Ditemukan%')
+    ),
+    ranked_valid AS (
         SELECT 
             row_number,
             assignment_id,
             assignment_status_alias,
             assignment_date_modified,
-            root_ada_keluarga_value,
-            root_ada_keluarga_label,
-            -- Prioritaskan penugasan yang valid (keluarga ditemukan/baru) dan status selesai
             CASE 
-                WHEN (root_ada_keluarga_value IS NULL OR root_ada_keluarga_value NOT IN ('0', '3', '4', '5'))
-                     AND (root_ada_keluarga_label IS NULL OR root_ada_keluarga_label NOT LIKE '%Tidak Ditemukan%') THEN
-                     CASE 
-                         WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 100
-                         WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 95
-                         WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 90
-                         WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 85
-                         WHEN assignment_status_alias LIKE 'EDITED%' THEN 80
-                         WHEN assignment_status_alias = 'DRAFT' THEN 50
-                         WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 30
-                         WHEN assignment_status_alias = 'OPEN' THEN 10
-                         ELSE 5
-                     END
-                ELSE
-                     -- Jika Tidak Ditemukan / Meninggal / Tidak Eligible
-                     CASE
-                         WHEN root_ada_keluarga_value = '0' THEN 2
-                         WHEN root_ada_keluarga_value = '3' THEN 2
-                         WHEN root_ada_keluarga_value = '4' THEN 2
-                         WHEN root_ada_keluarga_value = '5' THEN 2
-                         ELSE 1
-                     END
-            END as priority_score,
+                WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 100
+                WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 95
+                WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 90
+                WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 85
+                WHEN assignment_status_alias LIKE 'EDITED%' THEN 80
+                WHEN assignment_status_alias = 'DRAFT' THEN 50
+                WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 30
+                WHEN assignment_status_alias = 'OPEN' THEN 10
+                ELSE 0
+            END as status_rank,
             ROW_NUMBER() OVER (
                 PARTITION BY row_number 
                 ORDER BY 
                     CASE 
-                        WHEN (root_ada_keluarga_value IS NULL OR root_ada_keluarga_value NOT IN ('0', '3', '4', '5'))
-                             AND (root_ada_keluarga_label IS NULL OR root_ada_keluarga_label NOT LIKE '%Tidak Ditemukan%') THEN
-                             CASE 
-                                 WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 100
-                                 WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 95
-                                 WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 90
-                                 WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 85
-                                 WHEN assignment_status_alias LIKE 'EDITED%' THEN 80
-                                 WHEN assignment_status_alias = 'DRAFT' THEN 50
-                                 WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 30
-                                 WHEN assignment_status_alias = 'OPEN' THEN 10
-                                 ELSE 5
-                             END
-                        ELSE
-                             CASE
-                                 WHEN root_ada_keluarga_value = '0' THEN 2
-                                 WHEN root_ada_keluarga_value = '3' THEN 2
-                                 WHEN root_ada_keluarga_value = '4' THEN 2
-                                 WHEN root_ada_keluarga_value = '5' THEN 2
-                                 ELSE 1
-                             END
+                        WHEN assignment_status_alias = 'APPROVED BY Pengawas' THEN 100
+                        WHEN assignment_status_alias = 'COMPLETED BY Admin Kabupaten' THEN 95
+                        WHEN assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 90
+                        WHEN assignment_status_alias = 'SUBMITTED BY Pencacah' THEN 85
+                        WHEN assignment_status_alias LIKE 'EDITED%' THEN 80
+                        WHEN assignment_status_alias = 'DRAFT' THEN 50
+                        WHEN assignment_status_alias = 'REJECTED BY Pengawas' THEN 30
+                        WHEN assignment_status_alias = 'OPEN' THEN 10
+                        ELSE 0
                     END DESC,
                     assignment_date_modified DESC,
                     assignment_id DESC
             ) as rn
-        FROM all_matched_candidates
+        FROM valid_candidates
         WHERE assignment_id IS NOT NULL AND assignment_id != ''
     ),
-    final_output AS (
+    final_ranked AS (
         SELECT 
             s.row_number,
             s.nik_peg,
-            r.assignment_id,
-            r.assignment_status_alias,
-            r.root_ada_keluarga_value,
-            r.root_ada_keluarga_label,
-            r.priority_score,
-            -- Status Pengisian Murni Tanpa Fallback:
+            -- Mekanisme Awal dengan Fallback ke Kolom AZ:
+            -- Jika terisi lengkap (rank >= 80) -> gunakan assignment tersebut
+            -- Jika tidak ada assignment valid atau status keberadaannya 'Tidak Ditemukan', maka pilih assignment sesuai Link Assignment Tambahan di AZ
             CASE 
-                WHEN r.assignment_id IS NULL THEN 'Belum Ada Assignment'
-                WHEN r.priority_score >= 80 THEN 'Terisi Lengkap'
-                WHEN r.priority_score = 50 THEN 'Sedang Diisi (DRAFT)'
-                WHEN r.priority_score = 30 THEN 'Ditolak Pengawas'
-                WHEN r.priority_score = 10 THEN 'Belum Terisi (OPEN)'
-                WHEN r.root_ada_keluarga_value = '0' THEN 'Tidak Ditemukan (STOP)'
-                WHEN r.root_ada_keluarga_value = '3' THEN 'Meninggal'
-                WHEN r.root_ada_keluarga_value = '4' THEN 'Tidak Eligible'
-                WHEN r.root_ada_keluarga_value = '5' THEN 'Tidak Dapat Ditemui'
-                ELSE 'Lainnya'
-            END as status_pengisian,
-            COALESCE(r.assignment_status_alias, '-') as status_assignment,
+                WHEN r.status_rank >= 80 THEN r.assignment_id
+                ELSE s.ec_aid
+            END as chosen_aid,
             CASE 
-                WHEN r.assignment_id IS NOT NULL THEN '{SURVEY_BASE_URL}' || r.assignment_id
-                ELSE '-'
-            END as link_assignment
+                WHEN r.status_rank >= 80 THEN r.assignment_status_alias
+                ELSE COALESCE(ec_a.assignment_status_alias, 'OPEN')
+            END as chosen_status,
+            CASE 
+                WHEN r.status_rank >= 80 THEN 'Terisi Lengkap'
+                WHEN ec_a.assignment_status_alias IN ('APPROVED BY Pengawas', 'COMPLETED BY Admin Kabupaten', 'SUBMITTED RESPONDENT', 'SUBMITTED BY Pencacah') OR ec_a.assignment_status_alias LIKE 'EDITED%' THEN 'Terisi Lengkap'
+                WHEN r.status_rank = 50 OR ec_a.assignment_status_alias = 'DRAFT' THEN 'Sedang Diisi (DRAFT)'
+                WHEN r.status_rank = 30 OR ec_a.assignment_status_alias = 'REJECTED BY Pengawas' THEN 'Ditolak Pengawas'
+                ELSE 'Belum Terisi (OPEN)'
+            END as chosen_pengisian,
+            CASE 
+                WHEN r.status_rank >= 80 THEN r.status_rank
+                WHEN ec_a.assignment_status_alias = 'APPROVED BY Pengawas' THEN 100
+                WHEN ec_a.assignment_status_alias = 'SUBMITTED RESPONDENT' THEN 90
+                WHEN r.status_rank IS NOT NULL THEN r.status_rank
+                ELSE 10
+            END as final_rank
         FROM sheet_data s
-        LEFT JOIN ranked_candidates r ON s.row_number = r.row_number AND r.rn = 1
+        LEFT JOIN ranked_valid r ON s.row_number = r.row_number AND r.rn = 1
+        LEFT JOIN '{PARQUET_ASSIGNMENT}' ec_a ON s.ec_aid = ec_a.assignment_id
     )
     SELECT 
         row_number,
-        assignment_id,
-        status_assignment,
-        status_pengisian,
-        link_assignment
-    FROM final_output;
+        chosen_aid as assignment_id,
+        chosen_status as assignment_status_alias,
+        chosen_pengisian,
+        final_rank as status_rank
+    FROM final_ranked;
     """
 
     df_ranked = con.execute(ranking_sql).fetchdf()
     ranked_map = {row["row_number"]: row for row in df_ranked.to_dict(orient="records")}
     print(f"   ✓ Berhasil menentukan assignment terbaik untuk {len(df_ranked)} baris.")
 
-    # 5. Format hasil pembaruan nilai kolom BC, BD, BE (Murni Kunci 3 Tanpa Fallback)
+    # 5. Format hasil pembaruan nilai kolom BC, BD, BE
     update_rows = []
     # Baris 1: Header
     update_rows.append([COL_TERISI, COL_STATUS, COL_LINK])
 
-    summary_counts = {}
+    summary_counts = {
+        "Terisi Lengkap": 0,
+        "Sedang Diisi (DRAFT)": 0,
+        "Ditolak Pengawas": 0,
+        "Belum Terisi (OPEN)": 0,
+        "Belum Ada Assignment": 0
+    }
 
     for r_idx in range(2, len(rows) + 1):
         cand = ranked_map.get(r_idx)
         if cand:
-            terisi = cand["status_pengisian"] or "Belum Ada Assignment"
-            status = cand["status_assignment"] or "-"
-            link = cand["link_assignment"] or "-"
+            terisi = cand["chosen_pengisian"] or "Belum Terisi (OPEN)"
+            status = cand["assignment_status_alias"] or "OPEN"
+            aid = cand["assignment_id"] or ""
+            link = f"{SURVEY_BASE_URL}{aid}" if aid else ""
         else:
             terisi = "Belum Ada Assignment"
             status = "-"
