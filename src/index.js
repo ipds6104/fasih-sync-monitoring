@@ -1407,9 +1407,13 @@ if (cmd === "login") {
   syncAnomaliLocalToGoogleSheets().catch((e) => { console.error(e); process.exit(1); });
 } else if (cmd === "pull-petugas") {
   runPullProgressPetugas().catch((e) => { console.error(e); process.exit(1); });
+} else if (cmd === "sync-open-match") {
+  import("child_process").then(({ execSync }) => {
+    execSync("python scripts/sync_open_match_status.py", { stdio: "inherit" });
+  }).catch((e) => { console.error(e); process.exit(1); });
 } else {
   console.error(`Unknown command: ${cmd}`);
-  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-dashboard|sync-anomali|sync-anomali-local|sync-sqllab|sync-surreal|sync-dtsen|pull-petugas]");
+  console.error("Usage: node src/index.js [login|crawl|crawl-datatable|sync-gdrive|sync-se2026|sync-dashboard|sync-anomali|sync-anomali-local|sync-sqllab|sync-surreal|sync-dtsen|pull-petugas|sync-open-match]");
   process.exit(1);
 }
 

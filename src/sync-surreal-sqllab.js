@@ -512,6 +512,7 @@ async function runSurrealDeltaSyncInternal() {
 
   const grandTotalChanges = totalAllMerged + childUpdatedCount;
   const forceExport = process.argv.includes("--force-export") || process.env.FORCE_EXPORT_PARQUET === "true";
+  const forceSyncOpenMatch = process.argv.includes("--sync-open-match") || process.env.FORCE_SYNC_OPEN_MATCH === "true";
 
   // Tentukan tabel mana saja yang perlu diekspor ke Parquet
   const tablesToExport = [];
@@ -531,7 +532,7 @@ async function runSurrealDeltaSyncInternal() {
     }
   }
 
-  // Sinkronisasi otomatis ke berkas Parquet & Google Drive HANYA jika ada pembaruan data atau file belum lengkap
+  // Sinkronisasi otomatis ke berkas Parquet, Google Drive & Data OPEN Match HANYA jika ada pembaruan data atau file belum lengkap
   if (tablesToExport.length > 0 || forceExport) {
     const targetArg = forceExport && tablesToExport.length === 0 ? "" : tablesToExport.join(",");
     console.log(`\n🎉 Terdeteksi ${grandTotalChanges} perubahan data (${totalAllMerged} penugasan + ${childUpdatedCount} roster anak).`);
@@ -545,12 +546,29 @@ async function runSurrealDeltaSyncInternal() {
           const { uploadParquetZipToGDrive } = await import("./upload-parquet-to-gdrive.js");
           await uploadParquetZipToGDrive();
         }
+
+        if (process.env.AUTO_SYNC_OPEN_MATCH !== "false") {
+          console.log("\n── Menyinkronkan status pengisian & link assignment ke tab 'Data OPEN Match' Google Sheets ──");
+          try {
+            execSync("python scripts/sync_open_match_status.py", { stdio: "inherit" });
+          } catch (matchErr) {
+            console.warn(`⚠️ Catatan sinkronisasi Data OPEN Match: ${matchErr.message}`);
+          }
+        }
       } catch (err) {
-        console.warn(`⚠️ Catatan ekspor/upload Parquet: ${err.message}`);
+        console.warn(`⚠️ Catatan ekspor/upload Parquet/Open Match: ${err.message}`);
       }
     }
   } else {
     console.log("\nℹ️ [NO DATA CHANGES] Tidak ada perubahan data baru pada siklus ini (0 penugasan, 0 anak). Melewati ekspor Parquet & upload GDrive untuk menghemat waktu.");
+    if (forceSyncOpenMatch) {
+      console.log("\n── Menyinkronkan status pengisian & link assignment ke tab 'Data OPEN Match' Google Sheets (--sync-open-match aktif) ──");
+      try {
+        execSync("python scripts/sync_open_match_status.py", { stdio: "inherit" });
+      } catch (matchErr) {
+        console.warn(`⚠️ Catatan sinkronisasi Data OPEN Match: ${matchErr.message}`);
+      }
+    }
   }
 
   return { success: true, mode: "DELTA", updatedCount: totalAllMerged, childUpdatedCount, checkpoint: currentCheckpoint };
@@ -812,8 +830,17 @@ async function runSurrealFullSyncInternal(limit = 1000) {
         const { uploadParquetZipToGDrive } = await import("./upload-parquet-to-gdrive.js");
         await uploadParquetZipToGDrive();
       }
+
+      if (process.env.AUTO_SYNC_OPEN_MATCH !== "false") {
+        console.log("\n── Menyinkronkan status pengisian & link assignment ke tab 'Data OPEN Match' Google Sheets ──");
+        try {
+          execSync("python scripts/sync_open_match_status.py", { stdio: "inherit" });
+        } catch (matchErr) {
+          console.warn(`⚠️ Catatan sinkronisasi Data OPEN Match: ${matchErr.message}`);
+        }
+      }
     } catch (err) {
-      console.warn(`⚠️ Catatan ekspor/upload Parquet: ${err.message}`);
+      console.warn(`⚠️ Catatan ekspor/upload Parquet/Open Match: ${err.message}`);
     }
   }
 
