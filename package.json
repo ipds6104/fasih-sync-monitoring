@@ -29,7 +29,8 @@
     "upload-parquet": "node src/upload-parquet-to-gdrive.js",
     "prepare-scraping": "python src/prepare-scraping-input.py",
     "scrape-usaha": "python scraping_usaha.py data/input_scraping_mempawah.csv data/hasil_scraping_mempawah.csv --skip-search --skip-lowongan --turbo",
-    "sync-target-prioritas": "python src/sync_target_prioritas.py"
+    "sync-target-prioritas": "python src/sync_target_prioritas.py",
+    "sync-open-match": "python scripts/sync_open_match_status.py"
   },
   "keywords": [],
   "author": "",

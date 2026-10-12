@@ -555,6 +555,7 @@ Get-Content results\scheduler_runner.log -Tail 15
 | `npm run crawl` | [`src/index.js`](file:///c:/projects/fasih-sync-monitoring/src/index.js) | Crawling progres rekap pencacah langsung via FASIH-SM API. |
 | `npm run crawl-datatable`| [`src/index.js`](file:///c:/projects/fasih-sync-monitoring/src/index.js) | Crawling responden granular per Sub-SLS (Level 6) dengan stream writer memori. |
 | `npm run pull-petugas` | [`src/pull-progress-petugas.js`](file:///c:/projects/fasih-sync-monitoring/src/pull-progress-petugas.js) | Menarik rekap beban kerja dan capaian per petugas lapangan. |
+| `npm run sync-open-match` | [`scripts/sync_open_match_status.py`](file:///c:/projects/fasih-sync-monitoring/scripts/sync_open_match_status.py) | Memperbarui kolom status pengisian & link assignment di tab 'Data OPEN Match' secara idempoten by NIK_KK_DTSEN. |
 
 ---
 
