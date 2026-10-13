@@ -187,12 +187,24 @@ def main():
     print(f"   ✓ Memproses {len(unique_niks)} NIK Pegawai unik dari {len(df_sheet)} baris...")
 
     # Ambil referensi Anggota Tim Pelaksana dari spreadsheet sumber (Opsi 1)
-    print(f"\n👥 Mengambil referensi Anggota Tim Pelaksana dari '{TAB_TIM_NAME}' ({SPREADSHEET_TIM_ID})...")
+    print(f"\n👥 Mengambil referensi Anggota Tim Pelaksana dari spreadsheet {SPREADSHEET_TIM_ID}...")
     anggota_by_nik = {}
     try:
+        ss_tim = service.spreadsheets().get(
+            spreadsheetId=SPREADSHEET_TIM_ID,
+            fields="sheets(properties(sheetId,title))"
+        ).execute()
+        target_tab_name = TAB_TIM_NAME
+        for s in ss_tim.get("sheets", []):
+            p = s.get("properties", {})
+            if p.get("sheetId") == 2863658 or "Utama" in p.get("title", ""):
+                target_tab_name = p.get("title")
+                break
+        print(f"   ✓ Menggunakan tab: '{target_tab_name}'")
+
         res_tim = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_TIM_ID,
-            range=f"'{TAB_TIM_NAME}'!A1:AX1200"
+            range=f"'{target_tab_name}'!A1:AX1200"
         ).execute()
         src_rows = res_tim.get("values", [])
         if src_rows:
